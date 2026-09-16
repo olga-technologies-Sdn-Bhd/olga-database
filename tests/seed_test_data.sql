@@ -243,19 +243,11 @@ INSERT INTO nlp.nlp_model_version(
 )
 VALUES (
     'test-embedding-v1', 'OPENAI', 'text-embedding-3-small-test', 1536,
-    'test-normalizer-v1', 'ACTIVE', CURRENT_TIMESTAMP - interval '30 days'
+    'test-normalizer-v1', 'CANDIDATE', NULL
 )
 ON CONFLICT (model_version) DO NOTHING;
 
-INSERT INTO nlp.nlp_ranking_config(
-    ranking_version, semantic_weight, category_weight, industry_weight,
-    geography_weight, freshness_weight, event_weight, threshold, active_from
-)
-VALUES (
-    'test-ranking-v1', 0.40000, 0.20000, 0.15000, 0.10000,
-    0.10000, 0.05000, 0.35000, CURRENT_TIMESTAMP - interval '30 days'
-)
-ON CONFLICT (ranking_version) DO NOTHING;
+-- Reuse the single active ranking configuration installed by 050_seed.sql.
 
 INSERT INTO nlp.nlp_intent(
     intent_id, member_id, context_id, intent_type, original_text, normalized_text,
@@ -294,7 +286,7 @@ INSERT INTO nlp.match_request(
 VALUES (
     'test-match-request-001', repeat('8', 64), 'test-member-001',
     'test-intent-want-001', 'test-event-001', 'en', 3, '{"test_fixture":true}'::jsonb,
-    'COMPLETED', 'test-normalizer-v1', 'test-embedding-v1', 'test-ranking-v1',
+    'COMPLETED', 'test-normalizer-v1', 'test-embedding-v1', 'ranking-v1',
     0.35000, 1, CURRENT_TIMESTAMP
 )
 ON CONFLICT (request_id) DO NOTHING;
@@ -308,7 +300,7 @@ SELECT 'test-match-request-001', 'test-member-001', 'test-member-002', 1,
        0.8200000, 0.7900000, 0.8100000, 'STRONG_MATCH',
        '["CATEGORY_ALIGNED","INDUSTRY_ALIGNED"]'::jsonb,
        'Complementary needs and expertise in the same industry.',
-       'test-embedding-v1', 'test-normalizer-v1', 'test-ranking-v1', 'ELIGIBLE'
+       'test-embedding-v1', 'test-normalizer-v1', 'ranking-v1', 'ELIGIBLE'
 WHERE NOT EXISTS (
     SELECT 1 FROM nlp.nlp_match_result
     WHERE request_id = 'test-match-request-001' AND candidate_id = 'test-member-002'
@@ -365,7 +357,7 @@ INSERT INTO nlp.evaluation_run(
 )
 VALUES (
     'test-evaluation-run-001', 'test-evaluation-dataset-001', 'test-embedding-v1',
-    'test-ranking-v1', 'PASSED', '{"precision_at_5":1.0,"coverage":1.0}'::jsonb,
+    'ranking-v1', 'PASSED', '{"precision_at_5":1.0,"coverage":1.0}'::jsonb,
     CURRENT_TIMESTAMP - interval '2 minutes', CURRENT_TIMESTAMP - interval '1 minute'
 )
 ON CONFLICT (evaluation_run_id) DO NOTHING;
