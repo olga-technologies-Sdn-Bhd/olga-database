@@ -16,6 +16,26 @@ SELECT pg_advisory_xact_lock(hashtextextended('olga_schema_migration', 0));
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'olga_ddl_admin') THEN
+        EXECUTE 'CREATE ROLE olga_ddl_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'olga_dml_writer') THEN
+        EXECUTE 'CREATE ROLE olga_dml_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'olga_reader') THEN
+        EXECUTE 'CREATE ROLE olga_reader NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'olga_nlp_worker') THEN
+        EXECUTE 'CREATE ROLE olga_nlp_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION';
+    END IF;
+END;
+$$;
+
+GRANT olga_ddl_admin TO CURRENT_USER;
+SET ROLE olga_ddl_admin;
+
 CREATE SCHEMA IF NOT EXISTS core;
 CREATE SCHEMA IF NOT EXISTS iam;
 CREATE SCHEMA IF NOT EXISTS consent;
@@ -3088,6 +3108,31 @@ INSERT INTO iam.role_permission(role_code, permission_code) VALUES
     ('ADMIN','NLP_EVALUATION_READ'),('ADMIN','NLP_EVALUATION_CONFIGURE'),('ADMIN','PRIVACY_READ'),('ADMIN','PRIVACY_APPROVE'),('ADMIN','ROLE_CONFIGURE')
 ON CONFLICT (role_code, permission_code) DO UPDATE SET revoked_at = NULL;
 
+UPDATE nlp.nlp_model_version
+SET status = 'RETIRED',
+    updated_at = CURRENT_TIMESTAMP
+WHERE status = 'ACTIVE'
+  AND model_version <> 'azure-text-embedding-3-small-1536-v1';
+
+INSERT INTO nlp.nlp_model_version(
+    model_version, provider, deployment_name, dimensions, preprocessing_version, status, activated_at
+) VALUES (
+    'azure-text-embedding-3-small-1536-v1', 'AZURE_OPENAI', 'text-embedding-3-small',
+    1536, 'normalizer-v1', 'ACTIVE', CURRENT_TIMESTAMP
+)
+ON CONFLICT (model_version) DO UPDATE SET
+    provider = EXCLUDED.provider,
+    deployment_name = EXCLUDED.deployment_name,
+    dimensions = EXCLUDED.dimensions,
+    preprocessing_version = EXCLUDED.preprocessing_version,
+    status = 'ACTIVE',
+    activated_at = CASE
+        WHEN nlp.nlp_model_version.status = 'ACTIVE'
+            THEN COALESCE(nlp.nlp_model_version.activated_at, EXCLUDED.activated_at)
+        ELSE EXCLUDED.activated_at
+    END,
+    updated_at = CURRENT_TIMESTAMP;
+
 INSERT INTO nlp.nlp_ranking_config(
     ranking_version, semantic_weight, category_weight, industry_weight, geography_weight,
     freshness_weight, event_weight, threshold, active_from
@@ -3112,71 +3157,54 @@ WHERE current_setting('olga.seed_mvp_policies', true) = '1'
 ON CONFLICT DO NOTHING;
 
 -- ======================== DATABASE ROLES AND GRANTS ========================
-DO $$
-DECLARE
-    binding record;
-BEGIN
-    FOR binding IN
-        SELECT * FROM (VALUES
-            ('olga_core_app','core'),('olga_identity_app','iam'),('olga_consent_app','consent'),
-            ('olga_event_app','event'),('olga_social_app','social'),('olga_chat_app','chat'),
-            ('olga_storage_app','storage'),('olga_notification_app','notification'),('olga_nlp_app','nlp'),
-            ('olga_moderation_app','moderation'),('olga_ops_worker','ops'),('olga_analytics_writer','analytics')
-        ) AS roles(role_name, schema_name)
-    LOOP
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = binding.role_name) THEN
-            EXECUTE format('CREATE ROLE %I NOLOGIN', binding.role_name);
-        END IF;
-        EXECUTE format('REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA %I FROM PUBLIC', binding.schema_name);
-        EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', binding.schema_name, binding.role_name);
-        EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I', binding.schema_name, binding.role_name);
-        EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO %I', binding.schema_name, binding.role_name);
-        EXECUTE format('GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO %I', binding.schema_name, binding.role_name);
-    END LOOP;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'olga_admin_reader') THEN
-        EXECUTE 'CREATE ROLE olga_admin_reader NOLOGIN';
-    END IF;
-END;
-$$;
-
-GRANT USAGE ON SCHEMA admin TO olga_admin_reader;
-GRANT SELECT ON admin.vw_member_review TO olga_admin_reader;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA core, iam, consent, event, social, chat,
+    storage, notification, nlp, moderation, ops, analytics, admin, history FROM PUBLIC;
 REVOKE ALL ON SCHEMA history FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA history FROM PUBLIC;
-GRANT USAGE ON SCHEMA history TO olga_admin_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA history TO olga_admin_reader;
-GRANT USAGE ON SCHEMA ops TO olga_core_app, olga_identity_app, olga_consent_app, olga_event_app,
-    olga_social_app, olga_chat_app, olga_storage_app, olga_notification_app, olga_nlp_app,
-    olga_moderation_app, olga_analytics_writer;
-GRANT EXECUTE ON FUNCTION ops.set_audit_context(varchar), ops.current_audit_actor_id()
-    TO olga_core_app, olga_identity_app, olga_consent_app, olga_event_app, olga_social_app,
-       olga_chat_app, olga_storage_app, olga_notification_app, olga_nlp_app,
-       olga_moderation_app, olga_analytics_writer;
-GRANT SELECT ON nlp.vw_member_context_eligibility, nlp.vw_member_relationship TO olga_nlp_app;
-GRANT SELECT ON chat.vw_authorized_conversation TO olga_chat_app;
-GRANT SELECT ON iam.member TO olga_notification_app;
-GRANT SELECT ON core.member_profile, consent.member_consent TO olga_nlp_app;
-GRANT SELECT ON event.event_matching_policy TO olga_notification_app;
-GRANT INSERT ON ops.outbox_event TO olga_social_app, olga_chat_app, olga_notification_app, olga_storage_app;
-GRANT SELECT ON chat.conversation, chat.conversation_participant TO olga_social_app;
-GRANT INSERT ON ops.background_job TO olga_storage_app, olga_consent_app;
-GRANT INSERT ON moderation.content_scan TO olga_storage_app;
-GRANT INSERT ON ops.audit_event TO olga_identity_app, olga_consent_app, olga_storage_app, olga_moderation_app;
-GRANT SELECT, UPDATE, DELETE ON storage.file_asset, storage.file_asset_link TO olga_ops_worker;
-GRANT SELECT, INSERT, UPDATE ON ops.retention_policy TO olga_consent_app;
 
--- Append-only and authorization catalogs remain non-deletable for runtime identities.
-REVOKE UPDATE, DELETE ON ops.audit_event FROM olga_ops_worker;
-REVOKE INSERT, UPDATE, DELETE ON ops.retention_policy FROM olga_ops_worker;
-REVOKE DELETE ON ops.retention_execution FROM olga_ops_worker;
-REVOKE DELETE ON consent.privacy_request, consent.privacy_request_task FROM olga_consent_app;
-REVOKE DELETE ON iam.role, iam.permission, iam.role_permission, iam.member_role FROM olga_identity_app;
+GRANT USAGE ON SCHEMA core, iam, consent, event, social, chat, storage, notification,
+    nlp, moderation, ops, analytics, admin, history TO olga_dml_writer, olga_reader;
 
--- Atomic chat/connection workflows are function-only. Direct DML would bypass the
--- idempotency record, transactional outbox and member-scoped sync ledger.
-REVOKE INSERT, UPDATE, DELETE ON social.connection FROM olga_social_app;
-REVOKE INSERT, UPDATE, DELETE ON chat.conversation, chat.conversation_participant,
-    chat.message, chat.message_receipt FROM olga_chat_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA core, iam, consent, event,
+    social, chat, storage, notification, nlp, moderation, ops, analytics, admin, history
+    TO olga_dml_writer;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA core, iam, consent, event, social,
+    chat, storage, notification, nlp, moderation, ops, analytics, admin, history
+    TO olga_dml_writer;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA core, iam, consent, event, social, chat, storage,
+    notification, nlp, moderation, ops, analytics, admin, history TO olga_dml_writer;
+
+GRANT SELECT ON ALL TABLES IN SCHEMA core, iam, consent, event, social, chat, storage,
+    notification, nlp, moderation, ops, analytics, admin, history TO olga_reader;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA core, iam, consent, event, social, chat, storage,
+    notification, nlp, moderation, ops, analytics, admin, history TO olga_reader;
+
+-- The embedding worker can read its input and lease queue rows, but it cannot create or
+-- delete intents/jobs or access unrelated NLP and operational data.
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA nlp, ops FROM olga_nlp_worker;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA nlp, ops FROM olga_nlp_worker;
+REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA nlp, ops FROM olga_nlp_worker;
+REVOKE ALL PRIVILEGES ON SCHEMA nlp, ops FROM olga_nlp_worker;
+GRANT USAGE ON SCHEMA nlp, ops TO olga_nlp_worker;
+GRANT SELECT ON nlp.nlp_intent, nlp.nlp_processing_job, nlp.nlp_embedding TO olga_nlp_worker;
+GRANT UPDATE (status, updated_at) ON nlp.nlp_intent TO olga_nlp_worker;
+GRANT UPDATE (status, attempt_count, available_at, locked_until, error_code, updated_at)
+    ON nlp.nlp_processing_job TO olga_nlp_worker;
+GRANT INSERT, UPDATE ON nlp.nlp_embedding TO olga_nlp_worker;
+GRANT INSERT ON ops.outbox_event TO olga_nlp_worker;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE olga_ddl_admin
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO olga_dml_writer;
+ALTER DEFAULT PRIVILEGES FOR ROLE olga_ddl_admin
+    GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO olga_dml_writer;
+ALTER DEFAULT PRIVILEGES FOR ROLE olga_ddl_admin
+    GRANT EXECUTE ON FUNCTIONS TO olga_dml_writer;
+ALTER DEFAULT PRIVILEGES FOR ROLE olga_ddl_admin
+    REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE olga_ddl_admin
+    GRANT SELECT ON TABLES TO olga_reader;
+ALTER DEFAULT PRIVILEGES FOR ROLE olga_ddl_admin
+    GRANT SELECT ON SEQUENCES TO olga_reader;
 
 -- ======================== VERIFICATION ========================
 DO $$
@@ -3413,8 +3441,41 @@ BEGIN
        OR NOT EXISTS (SELECT 1 FROM iam.role_permission WHERE revoked_at IS NULL) THEN
         RAISE EXCEPTION 'Authorization permission seeds are missing.';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM nlp.nlp_model_version
+        WHERE model_version = 'azure-text-embedding-3-small-1536-v1'
+          AND provider = 'AZURE_OPENAI'
+          AND deployment_name = 'text-embedding-3-small'
+          AND dimensions = 1536
+          AND preprocessing_version = 'normalizer-v1'
+          AND status = 'ACTIVE'
+          AND activated_at IS NOT NULL
+    ) THEN RAISE EXCEPTION 'The approved active NLP model seed is missing or inconsistent.'; END IF;
+    IF NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_intent', 'SELECT')
+       OR NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_processing_job', 'SELECT')
+       OR NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_embedding', 'SELECT')
+       OR NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_embedding', 'INSERT')
+       OR NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_embedding', 'UPDATE')
+       OR NOT has_table_privilege('olga_nlp_worker', 'ops.outbox_event', 'INSERT')
+       OR NOT has_column_privilege('olga_nlp_worker', 'nlp.nlp_intent', 'status', 'UPDATE')
+       OR NOT has_column_privilege('olga_nlp_worker', 'nlp.nlp_processing_job', 'locked_until', 'UPDATE')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.nlp_intent', 'INSERT')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.nlp_intent', 'DELETE')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.nlp_processing_job', 'INSERT')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.nlp_processing_job', 'DELETE')
+       OR has_table_privilege('olga_nlp_worker', 'ops.outbox_event', 'SELECT')
+       OR has_table_privilege('olga_nlp_worker', 'ops.outbox_event', 'UPDATE')
+       OR has_table_privilege('olga_nlp_worker', 'ops.outbox_event', 'DELETE')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.match_request', 'SELECT')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.match_request', 'INSERT')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.match_request', 'UPDATE')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.match_request', 'DELETE') THEN
+        RAISE EXCEPTION 'NLP worker privileges are missing or exceed the approved boundary.';
+    END IF;
 END;
 $$;
 
 COMMENT ON SCHEMA ops IS 'OLGA.SchemaVersion=2.4';
+RESET ROLE;
 COMMIT;

@@ -11,8 +11,14 @@ schemas inside one database.
 - `OLGA_Connect_PostgreSQL_Full_Setup.sql`: generated, transactional setup for a new database.
 - `deploy_dbeaver.sql` and `deploy_dbeaver_prd.sql`: optional DBeaver database-name guards for
   `olga_connect_dev` and `olga_connect_prod`.
-- `070_bind_identities.template.sql`: separately executed template for pre-provisioned Azure
-  identities.
+- `migrate_dev_roles.sql`: one-time, data-preserving migration from the former service roles to
+  `olga_ddl_admin`, `olga_dml_writer`, `olga_reader`, and `olga_nlp_worker` in an existing
+  development database.
+- `070_bind_identities.template.sql`: non-executable reference for pre-provisioned Azure identities.
+- `bind_nlp_identities.sql`: guarded one-time identity-membership script for the environment's NLP
+  API and worker managed identities. It aborts before granting if an expected role is absent.
+- `deploy_nlp_runtime.sql`: guarded, rerunnable manual upgrade for the active embedding model and
+  least-privilege NLP worker role in either approved database.
 - `tests/validate_static.py`: static consistency and architecture validation.
 - `tests/seed_test_data.sql`: rerunnable development/test fixture with at least one coherent row in
   every application table; never run it in production.
@@ -28,8 +34,9 @@ schemas inside one database.
 
 - PostgreSQL 17.
 - The `vector` and `pg_stat_statements` extensions allowlisted on the Azure server.
-- A migration identity permitted to create schemas, extensions, NOLOGIN roles, tables, functions
-  and grants.
+- A migration identity permitted to create schemas, extensions, `NOLOGIN` roles, tables, functions
+  and grants. The setup grants this identity membership in `olga_ddl_admin` and creates all OLGA
+  objects under that owner role.
 - TLS certificate verification configured in the database client.
 
 ## Deploy
@@ -37,9 +44,18 @@ schemas inside one database.
 Follow [the DBeaver runbook](docs/dbeaver-deployment.md). The normal deployment artifact is
 `OLGA_Connect_PostgreSQL_Full_Setup.sql`; execute it as a script, not as individual statements.
 
-`070_bind_identities.template.sql` is intentionally excluded from the baseline. Replace its
-placeholders and execute it only after the corresponding Azure identities and PostgreSQL
-Microsoft Entra principals exist.
+`070_bind_identities.template.sql` is a non-executable reference and is intentionally excluded from
+the baseline. After the Azure managed identities have been mapped into PostgreSQL, execute the
+`bind_nlp_identities.sql` script. It only adds NLP API/worker memberships and does not modify other
+roles.
+
+For a database that already has the baseline, execute `deploy_nlp_runtime.sql` manually. It checks
+the database name, takes the migration advisory lock, applies the model/worker delta
+transactionally, and verifies the resulting privilege boundary.
+
+For a development database deployed with the former 13 service roles, run
+`migrate_dev_roles.sql` once as its existing migration owner. It preserves data and removes those
+obsolete roles after transferring ownership and privileges.
 
 ## Maintain
 

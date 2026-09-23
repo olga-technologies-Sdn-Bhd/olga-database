@@ -57,6 +57,31 @@ INSERT INTO iam.role_permission(role_code, permission_code) VALUES
     ('ADMIN','NLP_EVALUATION_READ'),('ADMIN','NLP_EVALUATION_CONFIGURE'),('ADMIN','PRIVACY_READ'),('ADMIN','PRIVACY_APPROVE'),('ADMIN','ROLE_CONFIGURE')
 ON CONFLICT (role_code, permission_code) DO UPDATE SET revoked_at = NULL;
 
+UPDATE nlp.nlp_model_version
+SET status = 'RETIRED',
+    updated_at = CURRENT_TIMESTAMP
+WHERE status = 'ACTIVE'
+  AND model_version <> 'azure-text-embedding-3-small-1536-v1';
+
+INSERT INTO nlp.nlp_model_version(
+    model_version, provider, deployment_name, dimensions, preprocessing_version, status, activated_at
+) VALUES (
+    'azure-text-embedding-3-small-1536-v1', 'AZURE_OPENAI', 'text-embedding-3-small',
+    1536, 'normalizer-v1', 'ACTIVE', CURRENT_TIMESTAMP
+)
+ON CONFLICT (model_version) DO UPDATE SET
+    provider = EXCLUDED.provider,
+    deployment_name = EXCLUDED.deployment_name,
+    dimensions = EXCLUDED.dimensions,
+    preprocessing_version = EXCLUDED.preprocessing_version,
+    status = 'ACTIVE',
+    activated_at = CASE
+        WHEN nlp.nlp_model_version.status = 'ACTIVE'
+            THEN COALESCE(nlp.nlp_model_version.activated_at, EXCLUDED.activated_at)
+        ELSE EXCLUDED.activated_at
+    END,
+    updated_at = CURRENT_TIMESTAMP;
+
 INSERT INTO nlp.nlp_ranking_config(
     ranking_version, semantic_weight, category_weight, industry_weight, geography_weight,
     freshness_weight, event_weight, threshold, active_from

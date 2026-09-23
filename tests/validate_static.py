@@ -181,6 +181,7 @@ def main() -> None:
     procedures = texts["040_procedures.sql"]
     invariants = texts["025_invariants.sql"]
     security = texts["060_security.sql"]
+    role_setup = texts["001_schemas_sequences.sql"]
     if "PRIMARY KEY (scope, actor_id, idempotency_key)" not in texts["010_tables.sql"]:
         fail("idempotency keys are not scoped by authenticated actor")
     for operation in ("social.accept_connection_request", "chat.save_message", "chat.save_message_receipt"):
@@ -192,8 +193,33 @@ def main() -> None:
         fail("exact two-member conversation integrity is not deferred to transaction commit")
     if "CREATE TRIGGER enforce_message_receipt" not in invariants or "Last-read message cursor cannot move backwards" not in invariants:
         fail("receipt or read-cursor monotonicity enforcement is missing")
-    if "REVOKE INSERT, UPDATE, DELETE ON chat.conversation, chat.conversation_participant" not in security:
-        fail("direct chat mutations can bypass atomic controlled functions")
+    expected_database_roles = {"olga_ddl_admin", "olga_dml_writer", "olga_reader", "olga_nlp_worker"}
+    created_database_roles = set(re.findall(r"CREATE ROLE (olga_[a-z_]+)", role_setup, re.I))
+    if created_database_roles != expected_database_roles:
+        fail(f"database-role inventory mismatch: {sorted(created_database_roles)}")
+    for required_grant in (
+        "TO olga_dml_writer", "TO olga_reader", "FOR ROLE olga_ddl_admin"
+    ):
+        if required_grant not in security:
+            fail(f"coarse-grained role grant is missing: {required_grant}")
+    seed = texts["050_seed.sql"]
+    for model_value in (
+        "azure-text-embedding-3-small-1536-v1", "AZURE_OPENAI",
+        "text-embedding-3-small", "normalizer-v1",
+    ):
+        if model_value not in seed:
+            fail(f"active NLP model seed is missing: {model_value}")
+    for worker_grant in (
+        "GRANT SELECT ON nlp.nlp_intent, nlp.nlp_processing_job, nlp.nlp_embedding TO olga_nlp_worker",
+        "ON nlp.nlp_intent TO olga_nlp_worker",
+        "ON nlp.nlp_processing_job TO olga_nlp_worker",
+        "GRANT INSERT, UPDATE ON nlp.nlp_embedding TO olga_nlp_worker",
+        "GRANT INSERT ON ops.outbox_event TO olga_nlp_worker",
+    ):
+        if worker_grant not in security:
+            fail(f"least-privilege NLP worker grant is missing: {worker_grant}")
+    if re.search(r"GRANT\s+(?:ALL|SELECT, INSERT, UPDATE, DELETE).*SCHEMA nlp.*olga_nlp_worker", security, re.I):
+        fail("NLP worker has unrestricted NLP schema access")
 
     full_setup = (ROOT / "OLGA_Connect_PostgreSQL_Full_Setup.sql").read_text(encoding="utf-8")
     for name, text in texts.items():

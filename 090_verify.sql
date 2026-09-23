@@ -232,8 +232,41 @@ BEGIN
        OR NOT EXISTS (SELECT 1 FROM iam.role_permission WHERE revoked_at IS NULL) THEN
         RAISE EXCEPTION 'Authorization permission seeds are missing.';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM nlp.nlp_model_version
+        WHERE model_version = 'azure-text-embedding-3-small-1536-v1'
+          AND provider = 'AZURE_OPENAI'
+          AND deployment_name = 'text-embedding-3-small'
+          AND dimensions = 1536
+          AND preprocessing_version = 'normalizer-v1'
+          AND status = 'ACTIVE'
+          AND activated_at IS NOT NULL
+    ) THEN RAISE EXCEPTION 'The approved active NLP model seed is missing or inconsistent.'; END IF;
+    IF NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_intent', 'SELECT')
+       OR NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_processing_job', 'SELECT')
+       OR NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_embedding', 'SELECT')
+       OR NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_embedding', 'INSERT')
+       OR NOT has_table_privilege('olga_nlp_worker', 'nlp.nlp_embedding', 'UPDATE')
+       OR NOT has_table_privilege('olga_nlp_worker', 'ops.outbox_event', 'INSERT')
+       OR NOT has_column_privilege('olga_nlp_worker', 'nlp.nlp_intent', 'status', 'UPDATE')
+       OR NOT has_column_privilege('olga_nlp_worker', 'nlp.nlp_processing_job', 'locked_until', 'UPDATE')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.nlp_intent', 'INSERT')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.nlp_intent', 'DELETE')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.nlp_processing_job', 'INSERT')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.nlp_processing_job', 'DELETE')
+       OR has_table_privilege('olga_nlp_worker', 'ops.outbox_event', 'SELECT')
+       OR has_table_privilege('olga_nlp_worker', 'ops.outbox_event', 'UPDATE')
+       OR has_table_privilege('olga_nlp_worker', 'ops.outbox_event', 'DELETE')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.match_request', 'SELECT')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.match_request', 'INSERT')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.match_request', 'UPDATE')
+       OR has_table_privilege('olga_nlp_worker', 'nlp.match_request', 'DELETE') THEN
+        RAISE EXCEPTION 'NLP worker privileges are missing or exceed the approved boundary.';
+    END IF;
 END;
 $$;
 
 COMMENT ON SCHEMA ops IS 'OLGA.SchemaVersion=2.4';
+RESET ROLE;
 COMMIT;
