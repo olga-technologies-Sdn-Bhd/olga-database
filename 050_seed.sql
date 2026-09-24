@@ -1,3 +1,9 @@
+-- Release 1 operates within a single default OLGA community.
+-- Preserve any production-managed values when the row already exists.
+INSERT INTO core.community(community_id, name, status, default_locale)
+VALUES ('olga', 'OLGA', 'ACTIVE', 'en-IN')
+ON CONFLICT (community_id) DO NOTHING;
+
 INSERT INTO iam.role(role_code, name, description, is_privileged) VALUES
     ('MEMBER','Member','Standard product member',false),
     ('ADMIN','Administrator','Privileged product administration through explicit permissions',true),
