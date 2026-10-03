@@ -138,20 +138,23 @@ ON CONFLICT (verification_id) DO NOTHING;
 INSERT INTO consent.consent_policy(
     policy_id, purpose_code, version, locale, content_hash, effective_from
 )
-VALUES (
-    'test-live-mode-policy-v1', 'LIVE_MODE', 'test-v1', 'en-IN', repeat('5', 64),
-    CURRENT_TIMESTAMP - interval '30 days'
-)
+VALUES
+    ('test-live-mode-policy-v1', 'LIVE_MODE', 'test-v1', 'en-IN', repeat('5', 64),
+     CURRENT_TIMESTAMP - interval '30 days'),
+    ('test-matching-policy-v1', 'MATCHING', 'test-v1', 'en-IN', repeat('a', 64),
+     CURRENT_TIMESTAMP - interval '30 days')
 ON CONFLICT (policy_id) DO NOTHING;
 
 INSERT INTO consent.member_consent(
     member_id, policy_id, decision, captured_at, capture_channel, evidence_json
 )
-SELECT 'test-member-001', 'test-live-mode-policy-v1', 'GRANTED',
+SELECT member.member_id, policy.policy_id, 'GRANTED',
        CURRENT_TIMESTAMP - interval '1 hour', 'MOBILE', '{"app_version":"1.0.0-test"}'::jsonb
+FROM (VALUES ('test-member-001'), ('test-member-002')) AS member(member_id)
+CROSS JOIN (VALUES ('test-live-mode-policy-v1'), ('test-matching-policy-v1')) AS policy(policy_id)
 WHERE NOT EXISTS (
     SELECT 1 FROM consent.member_consent
-    WHERE member_id = 'test-member-001' AND policy_id = 'test-live-mode-policy-v1'
+    WHERE member_id = member.member_id AND policy_id = policy.policy_id
 );
 
 INSERT INTO consent.privacy_request(
@@ -208,23 +211,31 @@ WHERE NOT EXISTS (
 INSERT INTO event.event_registration(
     event_id, member_id, status, checked_in_at, source
 )
-SELECT 'test-event-001', 'test-member-001', 'CHECKED_IN', CURRENT_TIMESTAMP - interval '30 minutes', 'APP'
+SELECT 'test-event-001', member.member_id, 'REGISTERED', NULL, 'APP'
+FROM (VALUES ('test-member-001'), ('test-member-002')) AS member(member_id)
 WHERE NOT EXISTS (
     SELECT 1 FROM event.event_registration
-    WHERE event_id = 'test-event-001' AND member_id = 'test-member-001'
+    WHERE event_id = 'test-event-001' AND member_id = member.member_id
 );
 
 INSERT INTO event.live_mode_session(
     live_session_id, event_id, member_id, consent_record_id, status,
     activated_at, active_until
 )
-SELECT 'test-live-session-001', 'test-event-001', 'test-member-001', mc.member_consent_id,
+SELECT member.live_session_id, 'test-event-001', member.member_id, mc.member_consent_id,
        'ACTIVE', CURRENT_TIMESTAMP - interval '20 minutes', CURRENT_TIMESTAMP + interval '1 day'
-FROM consent.member_consent mc
-WHERE mc.member_id = 'test-member-001'
-  AND mc.policy_id = 'test-live-mode-policy-v1'
-ORDER BY mc.captured_at DESC, mc.member_consent_id DESC
-LIMIT 1
+FROM (VALUES
+    ('test-live-session-001', 'test-member-001'),
+    ('test-live-session-002', 'test-member-002')
+) AS member(live_session_id, member_id)
+JOIN LATERAL (
+    SELECT consent_record.member_consent_id
+    FROM consent.member_consent consent_record
+    WHERE consent_record.member_id = member.member_id
+      AND consent_record.policy_id = 'test-live-mode-policy-v1'
+    ORDER BY consent_record.captured_at DESC, consent_record.member_consent_id DESC
+    LIMIT 1
+) mc ON true
 ON CONFLICT (live_session_id) DO NOTHING;
 
 INSERT INTO event.event_presence(

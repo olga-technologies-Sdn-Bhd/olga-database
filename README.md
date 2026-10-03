@@ -14,6 +14,8 @@ schemas inside one database.
 - `migrate_dev_roles.sql`: one-time, data-preserving migration from the former service roles to
   `olga_ddl_admin`, `olga_dml_writer`, `olga_reader`, and `olga_nlp_worker` in an existing
   development database.
+- `deploy_dev_matching_consent.sql`: guarded, rerunnable publication of the development `MATCHING`
+  consent policy and enforcement of `check_in_required = false` for its explicitly listed dev events.
 - `070_bind_identities.template.sql`: non-executable reference for pre-provisioned Azure identities.
 - `bind_nlp_identities.sql`: guarded one-time identity-membership script for the environment's NLP
   API and worker managed identities. It aborts before granting if an expected role is absent.
@@ -56,6 +58,10 @@ transactionally, and verifies the resulting privilege boundary.
 For a development database deployed with the former 13 service roles, run
 `migrate_dev_roles.sql` once as its existing migration owner. It preserves data and removes those
 obsolete roles after transferring ownership and privileges.
+
+For an existing development database that does not yet have matching consent, execute
+`deploy_dev_matching_consent.sql` as a script. Members must still accept the published policy through
+the application; the deployment does not create consent evidence for real members.
 
 ## Maintain
 
