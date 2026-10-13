@@ -29,6 +29,34 @@ The legacy v2.2 Azure SQL upgrade files remain source-reference artifacts and ar
 
 ## Deploy
 
+Follow [the DBeaver runbook](docs/dbeaver-deployment.md). The normal deployment artifact is
+`OLGA_Connect_PostgreSQL_Full_Setup.sql`; execute it as a script, not as individual statements.
+
+`070_bind_identities.template.sql` is a non-executable reference and is intentionally excluded from
+the baseline. After the Azure managed identities have been mapped into PostgreSQL, execute the
+`bind_nlp_identities.sql` script. It only adds NLP API/worker memberships and does not modify other
+roles. This separate NLP binding is intended for development or an NLP-only update; it is not
+needed after the complete production binding below.
+
+For production identity provisioning, replace the two placeholders in
+`map_prod_identities.template.sql` and `bind_prod_identities.template.sql`. Run the mapping template
+against the server's `postgres` database as its Microsoft Entra administrator, then run the binding
+template against `olga_connect_prod` as the migration identity. The binding removes unintended OLGA
+role memberships from runtime identities before granting their approved roles. The migration
+identity retains all four OLGA database roles for deployment and operational support.
+
+For a database that already has the baseline, execute `deploy_nlp_runtime.sql` manually. It checks
+the database name, takes the migration advisory lock, applies the model/worker delta
+transactionally, and verifies the resulting privilege boundary.
+
+For a development database deployed with the former 13 service roles, run
+`migrate_dev_roles.sql` once as its existing migration owner. It preserves data and removes those
+obsolete roles after transferring ownership and privileges.
+
+## Maintain
+
+Edit the numbered source modules, not the generated full-setup file. Rebuild it afterward:
+
 ```powershell
 .\deploy.ps1 `
   -ServerFqdn '<server>.postgres.database.azure.com' `
