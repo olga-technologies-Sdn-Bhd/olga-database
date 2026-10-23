@@ -1,6 +1,6 @@
 # OLGA Connect Table Reference
 
-This document provides a concise description of the 66 application tables in the OLGA Connect PostgreSQL database. Tables are grouped by their owning schema.
+This document provides a concise description of the 67 application tables in the OLGA Connect PostgreSQL v2.6 database. Tables are grouped by their owning schema.
 
 ## Core
 
@@ -8,6 +8,7 @@ This document provides a concise description of the 66 application tables in the
 - `core.organization` — A company or professional organization that appears in member profiles.
 - `core.organization_member` — Connects members to organizations and stores job title, department, primary affiliation, and employment dates.
 - `core.member_profile` — The member's professional profile, including display name, headline, summary, visibility, and completion status.
+- `core.member_profile_image` — Versioned profile-image metadata and processing state; image bytes remain in object storage.
 - `core.sector` — Controlled industry or sector catalogue. Supports parent-child sector hierarchies.
 - `core.member_sector` — Many-to-many association between members and sectors, including the member's primary sector.
 - `core.member_geography` — Countries, regions, and cities where a member professionally operates; it is not live-location data.
@@ -95,7 +96,7 @@ This document provides a concise description of the 66 application tables in the
 - `ops.sync_change` — Ordered change feed used by mobile clients to synchronize resources and deletions.
 - `ops.retention_policy` — Versioned rules specifying how long a data class is retained and how it is disposed.
 - `ops.retention_execution` — Evidence and counts from applying a specific retention-policy version.
-- `ops.outbox_event` — Transactional event waiting to be reliably published to another service or message broker.
+- `ops.outbox_event` — Transactional event waiting to be reliably published, with expiring lease ownership, retry scheduling, sanitized failure details, and explicit exhaustion state.
 - `ops.idempotency_record` — Prevents duplicate API mutations and stores the result of the original request.
 - `ops.background_job` — Retry and processing state for asynchronous work such as scanning files or sending notifications.
 - `ops.audit_event` — Append-only security and administrative audit evidence with actor, action, resource, and outcome.

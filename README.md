@@ -9,6 +9,9 @@ schemas inside one database.
 - `001_schemas_sequences.sql` through `090_verify.sql`: ordered, maintainable schema source.
 - `build_full_setup.ps1`: rebuilds the standalone setup from the ordered source modules.
 - `OLGA_Connect_PostgreSQL_Full_Setup.sql`: generated, transactional setup for a new database.
+- `migrations/003_v2_4_to_v2_5_profile_image.sql` and
+  `migrations/004_v2_5_to_v2_6_core_outbox_leasing.sql`: ordered, rerunnable upgrades from the
+  generated v2.4 baseline to the current v2.6 schema.
 - `deploy_dbeaver.sql` and `deploy_dbeaver_prd.sql`: optional DBeaver database-name guards for
   `olga_connect_dev` and `olga_connect_prod`.
 - `migrate_dev_roles.sql`: one-time, data-preserving migration from the former service roles to
@@ -45,6 +48,8 @@ schemas inside one database.
 
 Follow [the DBeaver runbook](docs/dbeaver-deployment.md). The normal deployment artifact is
 `OLGA_Connect_PostgreSQL_Full_Setup.sql`; execute it as a script, not as individual statements.
+It creates schema v2.4. Immediately apply migrations `003` and `004`, in order, to reach the
+current v2.6 application baseline. Do not deploy Core against a schema older than v2.6.
 
 `070_bind_identities.template.sql` is a non-executable reference and is intentionally excluded from
 the baseline. After the Azure managed identities have been mapped into PostgreSQL, execute the
@@ -90,6 +95,7 @@ On development/test only, execute these with a migration-owner connection:
 1. `tests/seed_test_data.sql` to populate persistent development/test fixture data (optional).
 2. `tests/verify_temporal_history.sql`
 3. `tests/verify_chat_atomicity.sql`
+4. `tests/verify_core_outbox_leasing.sql`
 
 The verification tests are self-contained and finish with `ROLLBACK`; the seed script commits its
 fixture rows and is safe to rerun.
@@ -104,5 +110,9 @@ fixture rows and is safe to rerun.
   to a bounded candidate set. ANN indexes are intentionally absent.
 - Connection, chat and receipt mutations use actor-scoped idempotency, transactional outbox and
   member-scoped synchronization records.
+- Profile-image bytes remain in object storage; PostgreSQL stores versioned image metadata and
+  processing state in `core.member_profile_image`.
+- Core outbox publishers claim bounded batches with expiring leases, renew ownership before slow
+  publishes, schedule bounded retries, and mark permanently failed or exhausted events explicitly.
 - The owned system-period trigger writes selected reference/configuration history without granting
   application roles direct access to history tables.

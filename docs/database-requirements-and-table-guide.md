@@ -10,7 +10,9 @@ Current baseline:
 
 - PostgreSQL 17 on Azure Database for PostgreSQL Flexible Server
 - One database per environment
-- 66 product tables across 12 bounded schemas
+- Schema version 2.6: the generated v2.4 baseline plus the ordered v2.5 profile-image and v2.6
+  Core outbox-leasing migrations
+- 67 product tables across 12 bounded schemas
 - 4 controlled read views and 9 controlled workflow functions
 - 11 low-volume configuration and reference tables with system-period history
 - API-only access from mobile and admin clients
@@ -26,7 +28,7 @@ The generated file OLGA_Connect_PostgreSQL_Full_Setup.sql is a deployment artifa
 | Time | Business timestamps use timestamptz and database defaults use CURRENT_TIMESTAMP. | Normalize API timestamps to UTC and enforce expiry on every read and write. |
 | Concurrency | Mutable API resources use bigint row_version, default 1, incremented by a shared BEFORE UPDATE trigger. | Return row_version as an ETag and require If-Match when lost updates matter. |
 | Mutation replay | ops.idempotency_record protects retryable commands. Atomic functions cover connection acceptance, chat writes, match persistence, and notifications. | Require Idempotency-Key on every mutation. The same key with a different request body is a conflict. |
-| Reliable integration | Business changes, ops.outbox_event, and ops.sync_change are committed in one transaction where applicable. | Publish only committed outbox events. Clients treat sync payloads as projections, not authority. |
+| Reliable integration | Business changes, ops.outbox_event, and ops.sync_change are committed in one transaction where applicable. Outbox rows use expiring leases, bounded retries, and explicit exhausted state. | Publish only committed events while holding the matching lease. Never acknowledge, retry, or exhaust an event after lease ownership is lost. Clients treat sync payloads as projections, not authority. |
 | Sensitive data | Ciphertext uses bytea. Passwords, OTP values, bearer tokens, refresh tokens, raw location, and encryption keys are not stored here. | Keep keys in Key Vault and authentication credentials in the approved CIAM platform. |
 | JSON | jsonb is limited to bounded, validated metadata, snapshots, and reason-code collections. | Keep relationships, permissions, states, and query predicates in typed columns. |
 | Deletion | Foreign keys default to NO ACTION. Privacy and retention workflows perform controlled deletion or anonymization. | Do not add cascading deletes without an approved lifecycle review. |
@@ -104,6 +106,7 @@ The core schema owns the professional profile and organization model. It does no
 | core.organization | Canonical professional organization used in member profiles. | Belongs to a community; parent of core.organization_member. |
 | core.organization_member | Member affiliation, title, department, and effective dates. | Joins core.organization to iam.member. |
 | core.member_profile | One searchable professional profile and publication state per member. | One-to-one with iam.member; source for sectors, geography, and visibility. |
+| core.member_profile_image | Object-storage paths, content metadata, processing status, and concurrency state for a member profile image. Image bytes are never stored in PostgreSQL. | Belongs to iam.member; the approved active image is referenced by core.member_profile.profile_image_id. |
 | core.sector | Controlled sector taxonomy with an optional parent sector. | Self-referencing hierarchy; joined to members through core.member_sector. |
 | core.member_sector | Many-to-many member sector assignment, including one optional primary sector. | Joins iam.member to core.sector. |
 | core.member_geography | Operating markets such as country, region, and city. | Belongs to iam.member; never used as live location. |
@@ -228,7 +231,7 @@ The ops schema provides reliability, audit, synchronization, and lifecycle contr
 
 | Table | Intended use | Main relationships |
 |---|---|---|
-| ops.outbox_event | Transactional event waiting for reliable publication. | Written in the same transaction as the business change. |
+| ops.outbox_event | Transactional event waiting for reliable publication, including lease ownership, retry scheduling, sanitized failure state, and explicit exhaustion. | Written in the same transaction as the business change; claimed and transitioned only by the lease-owning worker. |
 | ops.idempotency_record | Actor-scoped replay protection and stable result reference. | Keyed by operation scope, actor, and idempotency key. |
 | ops.background_job | Retry, lease, and terminal state for non-NLP work. | May target a product resource through controlled type and ID fields. |
 | ops.sync_change | Ordered, authorization-safe mobile delta and tombstone feed. | Scoped to a community and optionally one member. |
