@@ -1,6 +1,6 @@
 # OLGA Connect Table Reference
 
-This document provides a concise description of the 67 application tables in the OLGA Connect PostgreSQL v2.6 database. Tables are grouped by their owning schema.
+This document provides a concise description of the 67 application tables in the OLGA Connect PostgreSQL v2.7 database. Tables are grouped by their owning schema.
 
 ## Core
 

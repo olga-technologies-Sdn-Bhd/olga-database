@@ -373,6 +373,7 @@ DECLARE
     v_idempotency_status smallint;
     v_claimed boolean := false;
     v_community_id varchar(64);
+    v_recipient_member_id varchar(64);
 BEGIN
     IF p_idempotency_key IS NULL OR btrim(p_idempotency_key) = '' OR p_request_hash IS NULL THEN
         RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'Idempotency key and request hash are required.';
@@ -431,12 +432,24 @@ BEGIN
     UPDATE chat.conversation
     SET last_message_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
     WHERE conversation_id = p_conversation_id;
-    INSERT INTO ops.outbox_event(outbox_event_id, aggregate_type, aggregate_id, event_type, payload_json)
-    VALUES (gen_random_uuid()::text, 'MESSAGE', p_message_id, 'chat.message.created',
-            jsonb_build_object('messageId', p_message_id, 'conversationId', p_conversation_id));
 
-    SELECT community_id INTO v_community_id
-    FROM iam.member WHERE member_id = p_sender_member_id;
+    SELECT sender.community_id, recipient.member_id
+    INTO v_community_id, v_recipient_member_id
+    FROM iam.member sender
+    JOIN chat.conversation_participant recipient
+      ON recipient.conversation_id = p_conversation_id
+     AND recipient.member_id <> p_sender_member_id
+    WHERE sender.member_id = p_sender_member_id;
+
+    INSERT INTO ops.outbox_event(outbox_event_id, aggregate_type, aggregate_id, event_type, payload_json)
+    VALUES (gen_random_uuid()::text, 'MESSAGE', p_message_id, 'MessageCreated.v1',
+            jsonb_build_object(
+                'message_id', p_message_id,
+                'conversation_id', p_conversation_id,
+                'sender_member_id', p_sender_member_id,
+                'recipient_member_id', v_recipient_member_id,
+                'server_sequence', v_message.server_sequence
+            ));
     INSERT INTO ops.sync_change(
         community_id, member_scope_id, resource_type, resource_id, change_type,
         resource_version, payload_json, expires_at
@@ -563,9 +576,6 @@ BEGIN
     END IF;
 
     IF v_changed THEN
-        INSERT INTO ops.outbox_event(outbox_event_id, aggregate_type, aggregate_id, event_type, payload_json)
-        VALUES (gen_random_uuid()::text, 'MESSAGE', p_message_id, 'chat.message.receipt_updated',
-                jsonb_build_object('messageId', p_message_id, 'memberId', p_member_id));
         INSERT INTO ops.sync_change(
             community_id, member_scope_id, resource_type, resource_id, change_type,
             resource_version, payload_json, expires_at

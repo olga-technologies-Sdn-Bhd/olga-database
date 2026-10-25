@@ -29,6 +29,7 @@ order against the same database:
 
 1. `migrations/003_v2_4_to_v2_5_profile_image.sql`
 2. `migrations/004_v2_5_to_v2_6_core_outbox_leasing.sql`
+3. `migrations/005_v2_6_to_v2_7_chat_outbox_contract.sql`
 
 Each migration is transactional, rerunnable at its target version, and guarded against an
 unexpected starting version. Do not skip a version.
@@ -54,7 +55,7 @@ SELECT
     ) AS history_trigger_count;
 ```
 
-Expected schema version after the ordered migrations: `OLGA.SchemaVersion=2.6`. Expected
+Expected schema version after the ordered migrations: `OLGA.SchemaVersion=2.7`. Expected
 history-trigger count: `11`.
 
 Run the rollback-only integration tests listed in the repository README only against a

@@ -58,7 +58,7 @@ INSERT INTO ops.outbox_event (
     outbox_event_id, aggregate_type, aggregate_id, event_type, payload_json, occurred_at
 ) VALUES (
     'test-core-outbox-leasing', 'MESSAGE', 'test-core-outbox-leasing',
-    'chat.message.created.v1', '{"message_id":"test-core-outbox-leasing"}'::jsonb,
+    'TestEvent.v1', '{"message_id":"test-core-outbox-leasing"}'::jsonb,
     CURRENT_TIMESTAMP - interval '1 minute'
 );
 
@@ -279,7 +279,7 @@ INSERT INTO ops.outbox_event (
     attempt_count, lease_id, leased_until, last_attempt_at
 ) VALUES (
     'test-core-outbox-exhausted', 'MESSAGE', 'test-core-outbox-exhausted',
-    'chat.message.created.v1', '{"message_id":"test-core-outbox-exhausted"}'::jsonb,
+    'TestEvent.v1', '{"message_id":"test-core-outbox-exhausted"}'::jsonb,
     10, 'test-worker-exhaustion-lease', CURRENT_TIMESTAMP + interval '5 minutes',
     CURRENT_TIMESTAMP
 );

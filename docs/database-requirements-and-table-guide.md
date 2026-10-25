@@ -10,8 +10,8 @@ Current baseline:
 
 - PostgreSQL 17 on Azure Database for PostgreSQL Flexible Server
 - One database per environment
-- Schema version 2.6: the generated v2.4 baseline plus the ordered v2.5 profile-image and v2.6
-  Core outbox-leasing migrations
+- Schema version 2.7: the generated v2.4 baseline plus the ordered v2.5 profile-image, v2.6
+  Core outbox-leasing, and v2.7 chat outbox-contract migrations
 - 67 product tables across 12 bounded schemas
 - 4 controlled read views and 9 controlled workflow functions
 - 11 low-volume configuration and reference tables with system-period history

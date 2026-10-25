@@ -81,11 +81,34 @@ SELECT * FROM chat.save_message_receipt(
 
 DO $$
 BEGIN
-    IF (SELECT count(*) FROM ops.outbox_event WHERE aggregate_id = 'test-message-atomicity' AND event_type = 'chat.message.created') <> 1 THEN
-        RAISE EXCEPTION 'Message outbox event was not exactly-once.';
+    IF NOT EXISTS (
+        SELECT 1
+        FROM ops.outbox_event outbox
+        JOIN chat.message msg
+          ON msg.message_id = outbox.aggregate_id
+        WHERE outbox.aggregate_id = 'test-message-atomicity'
+          AND outbox.event_type = 'MessageCreated.v1'
+          AND outbox.payload_json = jsonb_build_object(
+              'message_id', 'test-message-atomicity',
+              'conversation_id', 'test-conversation-atomicity',
+              'sender_member_id', 'test-member-sender',
+              'recipient_member_id', 'test-member-recipient',
+              'server_sequence', msg.server_sequence
+          )
+    ) THEN
+        RAISE EXCEPTION 'Canonical message-created outbox event is missing or has an invalid payload.';
     END IF;
-    IF (SELECT count(*) FROM ops.outbox_event WHERE aggregate_id = 'test-message-atomicity' AND event_type = 'chat.message.receipt_updated') <> 1 THEN
-        RAISE EXCEPTION 'Receipt outbox event was not exactly-once.';
+    IF (SELECT count(*) FROM ops.outbox_event WHERE aggregate_id = 'test-message-atomicity') <> 1 THEN
+        RAISE EXCEPTION 'Message creation and receipt replay produced an unexpected outbox event count.';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM chat.message_receipt
+        WHERE message_id = 'test-message-atomicity'
+          AND member_id = 'test-member-recipient'
+          AND delivered_at IS NOT NULL
+          AND read_at IS NOT NULL
+    ) THEN
+        RAISE EXCEPTION 'Receipt state was not persisted.';
     END IF;
     IF (SELECT count(*) FROM ops.sync_change WHERE resource_id = 'test-message-atomicity') <> 4 THEN
         RAISE EXCEPTION 'Message and receipt did not each create two member-scoped sync changes.';

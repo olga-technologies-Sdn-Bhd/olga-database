@@ -9,9 +9,9 @@ schemas inside one database.
 - `001_schemas_sequences.sql` through `090_verify.sql`: ordered, maintainable schema source.
 - `build_full_setup.ps1`: rebuilds the standalone setup from the ordered source modules.
 - `OLGA_Connect_PostgreSQL_Full_Setup.sql`: generated, transactional setup for a new database.
-- `migrations/003_v2_4_to_v2_5_profile_image.sql` and
-  `migrations/004_v2_5_to_v2_6_core_outbox_leasing.sql`: ordered, rerunnable upgrades from the
-  generated v2.4 baseline to the current v2.6 schema.
+- `migrations/003_v2_4_to_v2_5_profile_image.sql` through
+  `migrations/005_v2_6_to_v2_7_chat_outbox_contract.sql`: ordered, rerunnable upgrades from the
+  generated v2.4 baseline to the current v2.7 schema.
 - `deploy_dbeaver.sql` and `deploy_dbeaver_prd.sql`: optional DBeaver database-name guards for
   `olga_connect_dev` and `olga_connect_prod`.
 - `migrate_dev_roles.sql`: one-time, data-preserving migration from the former service roles to
@@ -48,8 +48,8 @@ schemas inside one database.
 
 Follow [the DBeaver runbook](docs/dbeaver-deployment.md). The normal deployment artifact is
 `OLGA_Connect_PostgreSQL_Full_Setup.sql`; execute it as a script, not as individual statements.
-It creates schema v2.4. Immediately apply migrations `003` and `004`, in order, to reach the
-current v2.6 application baseline. Do not deploy Core against a schema older than v2.6.
+It creates schema v2.4. Immediately apply migrations `003` through `005`, in order, to reach the
+current v2.7 application baseline. Do not deploy Core against a schema older than v2.7.
 
 `070_bind_identities.template.sql` is a non-executable reference and is intentionally excluded from
 the baseline. After the Azure managed identities have been mapped into PostgreSQL, execute the
