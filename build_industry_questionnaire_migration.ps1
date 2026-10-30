@@ -84,6 +84,40 @@ BEGIN
 END;
 `$audit_triggers`$;
 
+-- QA and early development databases used four short sector codes before the canonical API
+-- taxonomy was approved. Reconcile only the exact known aliases and fail closed if a member or
+-- child sector now depends on one of them. Organization.industry_code is textual, so update it too.
+DO `$legacy_sector_aliases`$
+DECLARE
+    alias record;
+BEGIN
+    FOR alias IN
+        SELECT * FROM (VALUES
+            ('GOV'::varchar(64), 'GOVERNMENT'::varchar(64), 'Government & Public Sector'::varchar(150)),
+            ('HEALTH'::varchar(64), 'HEALTHCARE'::varchar(64), 'Healthcare & Life Sciences'::varchar(150)),
+            ('MFG'::varchar(64), 'MANUFACTURING'::varchar(64), 'Manufacturing & Industrial'::varchar(150)),
+            ('TELCO'::varchar(64), 'TELECOMMUNICATIONS'::varchar(64), 'Telecommunications'::varchar(150))
+        ) AS aliases(legacy_code, canonical_code, expected_name)
+    LOOP
+        IF EXISTS (
+            SELECT 1 FROM core.sector
+            WHERE sector_code = alias.legacy_code AND name = alias.expected_name
+        ) THEN
+            IF EXISTS (SELECT 1 FROM core.member_sector WHERE sector_code = alias.legacy_code)
+               OR EXISTS (SELECT 1 FROM core.sector WHERE parent_sector_code = alias.legacy_code)
+               OR EXISTS (SELECT 1 FROM core.sector_questionnaire WHERE sector_code = alias.legacy_code)
+               OR EXISTS (SELECT 1 FROM core.profile_question WHERE sector_code = alias.legacy_code) THEN
+                RAISE EXCEPTION 'Legacy sector % has dependent references and cannot be automatically canonicalized.', alias.legacy_code;
+            END IF;
+            UPDATE core.organization
+            SET industry_code = alias.canonical_code, updated_at = CURRENT_TIMESTAMP
+            WHERE industry_code = alias.legacy_code;
+            DELETE FROM core.sector WHERE sector_code = alias.legacy_code;
+        END IF;
+    END LOOP;
+END;
+`$legacy_sector_aliases`$;
+
 $seed
 
 -- Conservative legacy backfill: only exact controlled codes are migrated. Ambiguous role_category
@@ -193,6 +227,7 @@ $requiredFragments = @(
     'CREATE OR REPLACE FUNCTION ops.add_constraint_if_missing(',
     'DROP FUNCTION ops.add_constraint_if_missing(name, name, name, text);',
     "s.sector_code <> 'OTHER'",
+    "('HEALTH'::varchar(64), 'HEALTHCARE'::varchar(64), 'Healthcare & Life Sciences'::varchar(150))",
     "pg_get_serial_sequence('core.sector_questionnaire', 'sector_questionnaire_id')",
     "pg_get_serial_sequence('core.profile_question', 'profile_question_id')",
     "pg_get_serial_sequence('core.sector_questionnaire_question', 'sector_questionnaire_question_id')",
