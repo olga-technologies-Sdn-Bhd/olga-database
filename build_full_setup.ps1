@@ -12,6 +12,7 @@ $sections = @(
     @{ Label = 'CONTROLLED VIEWS'; File = '030_views.sql' },
     @{ Label = 'CONTROLLED FUNCTIONS'; File = '040_procedures.sql' },
     @{ Label = 'REFERENCE DATA'; File = '050_seed.sql' },
+    @{ Label = 'INDUSTRY QUESTIONNAIRE REFERENCE DATA'; File = '055_industry_questionnaire_seed.sql' },
     @{ Label = 'DATABASE ROLES AND GRANTS'; File = '060_security.sql' },
     @{ Label = 'VERIFICATION'; File = '090_verify.sql' }
 )

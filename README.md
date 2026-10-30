@@ -10,8 +10,8 @@ schemas inside one database.
 - `build_full_setup.ps1`: rebuilds the standalone setup from the ordered source modules.
 - `OLGA_Connect_PostgreSQL_Full_Setup.sql`: generated, transactional setup for a new database.
 - `migrations/003_v2_4_to_v2_5_profile_image.sql` through
-  `migrations/005_v2_6_to_v2_7_chat_outbox_contract.sql`: ordered, rerunnable upgrades from the
-  generated v2.4 baseline to the current v2.7 schema.
+  `migrations/006_v2_7_to_v2_8_industry_questionnaire.sql`: ordered, rerunnable upgrades from the
+  generated v2.4 baseline to the current v2.8 schema.
 - `deploy_dbeaver.sql` and `deploy_dbeaver_prd.sql`: optional DBeaver database-name guards for
   `olga_connect_dev` and `olga_connect_prod`.
 - `migrate_dev_roles.sql`: one-time, data-preserving migration from the former service roles to
@@ -48,8 +48,9 @@ schemas inside one database.
 
 Follow [the DBeaver runbook](docs/dbeaver-deployment.md). The normal deployment artifact is
 `OLGA_Connect_PostgreSQL_Full_Setup.sql`; execute it as a script, not as individual statements.
-It creates schema v2.4. Immediately apply migrations `003` through `005`, in order, to reach the
-current v2.7 application baseline. Do not deploy Core against a schema older than v2.7.
+It creates schema v2.4. Immediately apply migrations `003` through `006`, in order, to reach the
+current v2.8 application baseline. Do not deploy the questionnaire-enabled Core API against a
+schema older than v2.8.
 
 `070_bind_identities.template.sql` is a non-executable reference and is intentionally excluded from
 the baseline. After the Azure managed identities have been mapped into PostgreSQL, execute the
@@ -82,7 +83,7 @@ Then run:
 & '<approved-python>' .\tests\validate_static.py
 ```
 
-The validator confirms the 66-table inventory, PostgreSQL-native types, constraints, indexes,
+The validator confirms the product-table inventory, PostgreSQL-native types, constraints, indexes,
 controlled functions and that the generated setup contains every current source module.
 
 ## Database verification

@@ -108,6 +108,11 @@ The core schema owns the professional profile and organization model. It does no
 | core.member_profile | One searchable professional profile and publication state per member. | One-to-one with iam.member; source for sectors, geography, and visibility. |
 | core.member_profile_image | Object-storage paths, content metadata, processing status, and concurrency state for a member profile image. Image bytes are never stored in PostgreSQL. | Belongs to iam.member; the approved active image is referenced by core.member_profile.profile_image_id. |
 | core.sector | Controlled sector taxonomy with an optional parent sector. | Self-referencing hierarchy; joined to members through core.member_sector. |
+| core.sector_questionnaire | Current published questionnaire definition and version for a sector. | Belongs to core.sector; responses retain the submitted definition version. |
+| core.profile_question | Versioned generic or sector-specific question with structured answer configuration. | Generic rows apply to every questionnaire; sector rows apply only to their sector. |
+| core.sector_questionnaire_question | Immutable membership of question versions in a questionnaire definition version. | Makes historical responses reproducible after a question is revised or retired. |
+| core.member_questionnaire_response | Draft, completed, or superseded member response to a questionnaire version. | Belongs to a member and core.sector_questionnaire; owns individual answers. |
+| core.member_question_answer | Validated JSON answer to the exact question version shown. | Belongs to a member questionnaire response and core.profile_question. |
 | core.member_sector | Many-to-many member sector assignment, including one optional primary sector. | Joins iam.member to core.sector. |
 | core.member_geography | Operating markets such as country, region, and city. | Belongs to iam.member; never used as live location. |
 | core.profile_field_visibility | Per-field audience rule such as private, matched, connected, or members. | Belongs to iam.member; enforced by profile APIs. |

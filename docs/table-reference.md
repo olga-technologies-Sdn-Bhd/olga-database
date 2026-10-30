@@ -10,6 +10,11 @@ This document provides a concise description of the 67 application tables in the
 - `core.member_profile` — The member's professional profile, including display name, headline, summary, visibility, and completion status.
 - `core.member_profile_image` — Versioned profile-image metadata and processing state; image bytes remain in object storage.
 - `core.sector` — Controlled industry or sector catalogue. Supports parent-child sector hierarchies.
+- `core.sector_questionnaire` — Published, versioned profile-questionnaire definition for one controlled sector.
+- `core.profile_question` — Immutable generic or sector-specific question version with structured answer configuration.
+- `core.sector_questionnaire_question` — Immutable mapping of exact question versions to one published questionnaire definition version.
+- `core.member_questionnaire_response` — A member's draft, completed, or superseded response to an exact questionnaire definition.
+- `core.member_question_answer` — A validated answer tied to the exact question version shown to the member.
 - `core.member_sector` — Many-to-many association between members and sectors, including the member's primary sector.
 - `core.member_geography` — Countries, regions, and cities where a member professionally operates; it is not live-location data.
 - `core.profile_field_visibility` — Controls who can see individual profile fields, such as members or connected users.

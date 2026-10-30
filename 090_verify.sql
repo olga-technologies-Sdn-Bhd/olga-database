@@ -1,7 +1,7 @@
 DO $$
 DECLARE
     expected_tables text[] := ARRAY[
-        'core.community','core.organization','core.organization_member','core.member_profile','core.sector','core.member_sector','core.member_geography','core.profile_field_visibility','core.member_verification',
+        'core.community','core.organization','core.organization_member','core.member_profile','core.sector','core.member_sector','core.sector_questionnaire','core.profile_question','core.sector_questionnaire_question','core.member_questionnaire_response','core.member_question_answer','core.member_geography','core.profile_field_visibility','core.member_verification',
         'iam.member','iam.member_identity','iam.role','iam.permission','iam.role_permission','iam.member_role','iam.member_device','iam.auth_session',
         'consent.consent_policy','consent.member_consent','consent.privacy_request','consent.privacy_request_task',
         'event.venue','event.event','event.event_matching_policy','event.event_registration','event.live_mode_session','event.event_presence',
@@ -231,6 +231,36 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM iam.permission WHERE status = 'ACTIVE')
        OR NOT EXISTS (SELECT 1 FROM iam.role_permission WHERE revoked_at IS NULL) THEN
         RAISE EXCEPTION 'Authorization permission seeds are missing.';
+    END IF;
+    IF (SELECT count(*) FROM core.sector_questionnaire WHERE status = 'ACTIVE') <> 17
+       OR NOT EXISTS (SELECT 1 FROM core.sector WHERE sector_code = 'OTHER' AND status = 'ACTIVE')
+       OR (SELECT count(*) FROM core.profile_question WHERE sector_code IS NULL AND status = 'ACTIVE') <> 6
+       OR EXISTS (
+            SELECT 1 FROM core.sector_questionnaire sq
+            WHERE sq.status = 'ACTIVE'
+              AND NOT EXISTS (
+                  SELECT 1 FROM core.sector_questionnaire_question sqq
+                  WHERE sqq.sector_questionnaire_id = sq.sector_questionnaire_id
+                    AND sqq.definition_version = sq.definition_version
+              )
+       )
+       OR EXISTS (
+            SELECT 1 FROM core.sector_questionnaire sq
+            WHERE sq.status = 'ACTIVE'
+              AND NOT EXISTS (
+                  SELECT 1 FROM core.profile_question q
+                  WHERE q.sector_code = sq.sector_code AND q.status = 'ACTIVE'
+              )
+       ) THEN
+        RAISE EXCEPTION 'Industry questionnaire reference data is missing or inconsistent.';
+    END IF;
+    IF NOT has_table_privilege('olga_dml_writer', 'core.sector_questionnaire', 'SELECT')
+       OR NOT has_table_privilege('olga_dml_writer', 'core.profile_question', 'SELECT')
+       OR NOT has_table_privilege('olga_dml_writer', 'core.sector_questionnaire_question', 'SELECT')
+       OR has_table_privilege('olga_dml_writer', 'core.sector_questionnaire', 'UPDATE')
+       OR has_table_privilege('olga_dml_writer', 'core.profile_question', 'UPDATE')
+       OR has_table_privilege('olga_dml_writer', 'core.sector_questionnaire_question', 'INSERT') THEN
+        RAISE EXCEPTION 'Questionnaire-definition privileges exceed the approved runtime boundary.';
     END IF;
     IF NOT EXISTS (
         SELECT 1

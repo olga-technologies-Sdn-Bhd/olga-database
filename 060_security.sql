@@ -20,6 +20,32 @@ GRANT SELECT ON ALL TABLES IN SCHEMA core, iam, consent, event, social, chat, st
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA core, iam, consent, event, social, chat, storage,
     notification, nlp, moderation, ops, analytics, admin, history TO olga_reader;
 
+-- Questionnaire definitions are deployment-managed reference data. The Core runtime reads them
+-- but only writes member selections and responses.
+REVOKE INSERT, UPDATE, DELETE ON
+    core.sector, core.sector_questionnaire, core.profile_question, core.sector_questionnaire_question
+FROM olga_dml_writer;
+GRANT SELECT ON
+    core.sector, core.sector_questionnaire, core.profile_question, core.sector_questionnaire_question
+TO olga_dml_writer;
+DO $questionnaire_sequence_privileges$
+DECLARE
+    sequence_name text;
+BEGIN
+    FOREACH sequence_name IN ARRAY ARRAY[
+        pg_get_serial_sequence('core.sector_questionnaire', 'sector_questionnaire_id'),
+        pg_get_serial_sequence('core.profile_question', 'profile_question_id'),
+        pg_get_serial_sequence('core.sector_questionnaire_question', 'sector_questionnaire_question_id')
+    ]
+    LOOP
+        IF sequence_name IS NULL THEN
+            RAISE EXCEPTION 'Questionnaire identity sequence could not be resolved.';
+        END IF;
+        EXECUTE format('REVOKE ALL PRIVILEGES ON SEQUENCE %s FROM olga_dml_writer', sequence_name);
+    END LOOP;
+END;
+$questionnaire_sequence_privileges$;
+
 -- The embedding worker can read its input and lease queue rows, but it cannot create or
 -- delete intents/jobs or access unrelated NLP and operational data.
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA nlp, ops FROM olga_nlp_worker;

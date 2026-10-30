@@ -8,11 +8,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_FILES = [
     "001_schemas_sequences.sql", "010_tables.sql", "015_audit_history.sql", "020_constraints_indexes.sql", "025_invariants.sql",
-    "030_views.sql", "040_procedures.sql", "050_seed.sql", "060_security.sql", "090_verify.sql",
+    "030_views.sql", "040_procedures.sql", "050_seed.sql", "055_industry_questionnaire_seed.sql", "060_security.sql", "090_verify.sql",
 ]
 EXPECTED_TABLES = {
     "core.community", "core.organization", "core.organization_member", "core.member_profile", "core.sector",
-    "core.member_sector", "core.member_geography", "core.profile_field_visibility", "core.member_verification",
+    "core.member_sector", "core.sector_questionnaire", "core.profile_question", "core.sector_questionnaire_question", "core.member_questionnaire_response",
+    "core.member_question_answer", "core.member_geography", "core.profile_field_visibility", "core.member_verification",
     "iam.member", "iam.member_identity", "iam.role", "iam.permission", "iam.role_permission", "iam.member_role",
     "iam.member_device", "iam.auth_session", "consent.consent_policy", "consent.member_consent",
     "consent.privacy_request", "consent.privacy_request_task", "event.venue", "event.event",
@@ -94,7 +95,7 @@ def main() -> None:
         r"add_constraint_if_missing\('([a-z_]+)', '([a-z_]+)', '[a-z0-9_]+', \$constraint\$FOREIGN KEY \(([a-z0-9_]+)\) REFERENCES ([a-z_]+\.[a-z_]+) \(([a-z0-9_]+)\)\$constraint\$\)",
         texts["020_constraints_indexes.sql"], re.I,
     )
-    if len(foreign_keys) != 101:
+    if len(foreign_keys) != 109:
         fail(f"unexpected foreign-key inventory: {len(foreign_keys)}")
     for source_schema, source_name, source_column, target_table, target_column in foreign_keys:
         source_table = f"{source_schema}.{source_name}"
@@ -115,7 +116,7 @@ def main() -> None:
 
     constraint_count = len(re.findall(r"^SELECT ops\.add_constraint_if_missing", texts["020_constraints_indexes.sql"], re.M))
     index_count = len(re.findall(r"^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS", texts["020_constraints_indexes.sql"], re.M))
-    if constraint_count != 174 or index_count != 175:
+    if constraint_count != 188 or index_count != 185:
         fail(f"constraint/index inventory mismatch: constraints={constraint_count}, indexes={index_count}")
 
     if not re.search(r"embedding\s+vector\(1536\)\s+NOT NULL", texts["010_tables.sql"], re.I):
