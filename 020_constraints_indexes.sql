@@ -11,6 +11,14 @@ SELECT ops.add_constraint_if_missing('core', 'member_profile', 'fk_member_profil
 SELECT ops.add_constraint_if_missing('core', 'sector', 'fk_sector_parent_sector_code', $constraint$FOREIGN KEY (parent_sector_code) REFERENCES core.sector (sector_code)$constraint$);
 SELECT ops.add_constraint_if_missing('core', 'member_sector', 'fk_member_sector_member_id', $constraint$FOREIGN KEY (member_id) REFERENCES iam.member (member_id)$constraint$);
 SELECT ops.add_constraint_if_missing('core', 'member_sector', 'fk_member_sector_sector_code', $constraint$FOREIGN KEY (sector_code) REFERENCES core.sector (sector_code)$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'sector_questionnaire', 'fk_sector_questionnaire_sector_code', $constraint$FOREIGN KEY (sector_code) REFERENCES core.sector (sector_code)$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'profile_question', 'fk_profile_question_sector_code', $constraint$FOREIGN KEY (sector_code) REFERENCES core.sector (sector_code)$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'sector_questionnaire_question', 'fk_sector_questionnaire_question_questionnaire_id', $constraint$FOREIGN KEY (sector_questionnaire_id) REFERENCES core.sector_questionnaire (sector_questionnaire_id)$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'sector_questionnaire_question', 'fk_sector_questionnaire_question_question_id', $constraint$FOREIGN KEY (profile_question_id) REFERENCES core.profile_question (profile_question_id)$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'member_questionnaire_response', 'fk_member_questionnaire_response_member_id', $constraint$FOREIGN KEY (member_id) REFERENCES iam.member (member_id)$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'member_questionnaire_response', 'fk_member_questionnaire_response_questionnaire_id', $constraint$FOREIGN KEY (sector_questionnaire_id) REFERENCES core.sector_questionnaire (sector_questionnaire_id)$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'member_question_answer', 'fk_member_question_answer_response_id', $constraint$FOREIGN KEY (member_questionnaire_response_id) REFERENCES core.member_questionnaire_response (member_questionnaire_response_id)$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'member_question_answer', 'fk_member_question_answer_question_id', $constraint$FOREIGN KEY (profile_question_id) REFERENCES core.profile_question (profile_question_id)$constraint$);
 SELECT ops.add_constraint_if_missing('core', 'member_geography', 'fk_member_geography_member_id', $constraint$FOREIGN KEY (member_id) REFERENCES iam.member (member_id)$constraint$);
 SELECT ops.add_constraint_if_missing('core', 'profile_field_visibility', 'fk_profile_field_visibility_member_id', $constraint$FOREIGN KEY (member_id) REFERENCES iam.member (member_id)$constraint$);
 SELECT ops.add_constraint_if_missing('core', 'member_verification', 'fk_member_verification_member_id', $constraint$FOREIGN KEY (member_id) REFERENCES iam.member (member_id)$constraint$);
@@ -75,7 +83,6 @@ SELECT ops.add_constraint_if_missing('nlp', 'nlp_feedback', 'fk_nlp_feedback_req
 SELECT ops.add_constraint_if_missing('nlp', 'nlp_feedback', 'fk_nlp_feedback_candidate_id', $constraint$FOREIGN KEY (candidate_id) REFERENCES iam.member (member_id)$constraint$);
 SELECT ops.add_constraint_if_missing('nlp', 'match_suppression', 'fk_match_suppression_member_id', $constraint$FOREIGN KEY (member_id) REFERENCES iam.member (member_id)$constraint$);
 SELECT ops.add_constraint_if_missing('nlp', 'match_suppression', 'fk_match_suppression_intent_id', $constraint$FOREIGN KEY (intent_id) REFERENCES nlp.nlp_intent (intent_id)$constraint$);
-SELECT ops.add_constraint_if_missing('nlp', 'match_suppression', 'fk_match_suppression_created_by', $constraint$FOREIGN KEY (created_by) REFERENCES iam.member (member_id)$constraint$);
 SELECT ops.add_constraint_if_missing('nlp', 'evaluation_dataset', 'fk_evaluation_dataset_approved_by', $constraint$FOREIGN KEY (approved_by) REFERENCES iam.member (member_id)$constraint$);
 SELECT ops.add_constraint_if_missing('nlp', 'evaluation_pair', 'fk_evaluation_pair_dataset_id', $constraint$FOREIGN KEY (dataset_id) REFERENCES nlp.evaluation_dataset (dataset_id)$constraint$);
 SELECT ops.add_constraint_if_missing('nlp', 'evaluation_run', 'fk_evaluation_run_dataset_id', $constraint$FOREIGN KEY (dataset_id) REFERENCES nlp.evaluation_dataset (dataset_id)$constraint$);
@@ -85,23 +92,53 @@ SELECT ops.add_constraint_if_missing('moderation', 'moderation_case', 'fk_modera
 SELECT ops.add_constraint_if_missing('moderation', 'moderation_case', 'fk_moderation_case_assigned_to', $constraint$FOREIGN KEY (assigned_to) REFERENCES iam.member (member_id)$constraint$);
 SELECT ops.add_constraint_if_missing('moderation', 'moderation_action', 'fk_moderation_action_moderation_case_id', $constraint$FOREIGN KEY (moderation_case_id) REFERENCES moderation.moderation_case (moderation_case_id)$constraint$);
 SELECT ops.add_constraint_if_missing('moderation', 'moderation_action', 'fk_moderation_action_actor_member_id', $constraint$FOREIGN KEY (actor_member_id) REFERENCES iam.member (member_id)$constraint$);
-SELECT ops.add_constraint_if_missing('moderation', 'content_rule', 'fk_content_rule_created_by', $constraint$FOREIGN KEY (created_by) REFERENCES iam.member (member_id)$constraint$);
 SELECT ops.add_constraint_if_missing('analytics', 'product_event', 'fk_product_event_community_id', $constraint$FOREIGN KEY (community_id) REFERENCES core.community (community_id)$constraint$);
-SELECT ops.add_constraint_if_missing('iam', 'member', 'ck_member_status', $constraint$CHECK (status IN ('PENDING','ACTIVE','SUSPENDED','DELETED'))$constraint$);
+
+-- Scope idempotency keys by authenticated actor. The earlier two-column key was
+-- unnecessarily global and could make unrelated members collide on the same client key.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'ops.idempotency_record'::regclass
+          AND conname = 'pk_idempotency_record_'
+          AND pg_get_constraintdef(oid) <> 'PRIMARY KEY (scope, actor_id, idempotency_key)'
+    ) THEN
+        ALTER TABLE ops.idempotency_record DROP CONSTRAINT pk_idempotency_record_;
+        ALTER TABLE ops.idempotency_record
+            ADD CONSTRAINT pk_idempotency_record_ PRIMARY KEY (scope, actor_id, idempotency_key);
+    END IF;
+END;
+$$;
+
+SELECT ops.add_constraint_if_missing('iam', 'member', 'ck_member_status', $constraint$CHECK (status IN ('PENDING','ACTIVE','SUSPENDED','ANONYMIZED','DELETED'))$constraint$);
+SELECT ops.add_constraint_if_missing('iam', 'member_identity', 'ck_member_identity_status', $constraint$CHECK (status IN ('ACTIVE','REVOKED'))$constraint$);
+SELECT ops.add_constraint_if_missing('iam', 'member_identity', 'ck_member_identity_revocation', $constraint$CHECK ((status = 'REVOKED') = (revoked_at IS NOT NULL))$constraint$);
+SELECT ops.add_constraint_if_missing('iam', 'role', 'ck_role_status', $constraint$CHECK (status IN ('ACTIVE','RETIRED'))$constraint$);
 SELECT ops.add_constraint_if_missing('iam', 'member_device', 'ck_member_device_platform', $constraint$CHECK (platform IN ('IOS','ANDROID'))$constraint$);
 SELECT ops.add_constraint_if_missing('iam', 'member_device', 'ck_member_device_status', $constraint$CHECK (status IN ('ACTIVE','REVOKED'))$constraint$);
-SELECT ops.add_constraint_if_missing('core', 'member_profile', 'ck_member_profile_profile_status', $constraint$CHECK (profile_status IN ('DRAFT','ACTIVE','HIDDEN'))$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'member_profile', 'ck_member_profile_profile_status', $constraint$CHECK (profile_status IN ('DRAFT','PENDING_REVIEW','ACTIVE','HIDDEN'))$constraint$);
 SELECT ops.add_constraint_if_missing('core', 'member_profile', 'ck_member_profile_visibility', $constraint$CHECK (visibility IN ('PUBLIC','MEMBERS','CONNECTED','HIDDEN'))$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'member_sector', 'ck_member_sector_custom_name', $constraint$CHECK ((sector_code = 'OTHER' AND custom_sector_name IS NOT NULL AND btrim(custom_sector_name) <> '') OR (sector_code <> 'OTHER' AND custom_sector_name IS NULL))$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'sector_questionnaire', 'ck_sector_questionnaire_values', $constraint$CHECK (definition_version > 0 AND status IN ('DRAFT','ACTIVE','RETIRED'))$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'profile_question', 'ck_profile_question_values', $constraint$CHECK (question_version > 0 AND answer_type IN ('SINGLE_SELECT','MULTI_SELECT','TEXT','NUMBER','BOOLEAN') AND status IN ('DRAFT','ACTIVE','RETIRED') AND jsonb_typeof(configuration_json) = 'object')$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'sector_questionnaire_question', 'ck_sector_questionnaire_question_values', $constraint$CHECK (definition_version > 0)$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'member_questionnaire_response', 'ck_member_questionnaire_response_values', $constraint$CHECK (definition_version > 0 AND status IN ('DRAFT','COMPLETED','SUPERSEDED') AND (status <> 'COMPLETED' OR completed_at IS NOT NULL))$constraint$);
+SELECT ops.add_constraint_if_missing('core', 'member_question_answer', 'ck_member_question_answer_object', $constraint$CHECK (jsonb_typeof(answer_json) = 'object')$constraint$);
 SELECT ops.add_constraint_if_missing('consent', 'member_consent', 'ck_member_consent_decision', $constraint$CHECK (decision IN ('GRANTED','DENIED','WITHDRAWN'))$constraint$);
 SELECT ops.add_constraint_if_missing('event', 'event', 'ck_event_status', $constraint$CHECK (status IN ('DRAFT','PUBLISHED','ACTIVE','COMPLETED','CANCELLED'))$constraint$);
 SELECT ops.add_constraint_if_missing('event', 'event_matching_policy', 'ck_event_matching_policy_status', $constraint$CHECK (status IN ('DRAFT','ACTIVE','RETIRED'))$constraint$);
 SELECT ops.add_constraint_if_missing('event', 'event_matching_policy', 'ck_event_matching_policy_proximity_mode', $constraint$CHECK (proximity_mode IN ('NONE','VENUE','COARSE_CELL'))$constraint$);
 SELECT ops.add_constraint_if_missing('event', 'event_registration', 'ck_event_registration_status', $constraint$CHECK (status IN ('INVITED','REGISTERED','CHECKED_IN','CANCELLED'))$constraint$);
 SELECT ops.add_constraint_if_missing('event', 'live_mode_session', 'ck_live_mode_session_status', $constraint$CHECK (status IN ('ACTIVE','DISABLED','EXPIRED'))$constraint$);
+SELECT ops.add_constraint_if_missing('event', 'live_mode_session', 'ck_live_mode_session_dates', $constraint$CHECK (active_until > activated_at AND (disabled_at IS NULL OR disabled_at >= activated_at))$constraint$);
+SELECT ops.add_constraint_if_missing('event', 'venue', 'ck_venue_status', $constraint$CHECK (status IN ('ACTIVE','RETIRED'))$constraint$);
 SELECT ops.add_constraint_if_missing('social', 'connection_request', 'ck_connection_request_status', $constraint$CHECK (status IN ('PENDING','ACCEPTED','DECLINED','WITHDRAWN','EXPIRED'))$constraint$);
 SELECT ops.add_constraint_if_missing('social', 'connection', 'ck_connection_status', $constraint$CHECK (status IN ('ACTIVE','DISCONNECTED'))$constraint$);
 SELECT ops.add_constraint_if_missing('chat', 'conversation', 'ck_conversation_status', $constraint$CHECK (status IN ('ACTIVE','CLOSED','RESTRICTED'))$constraint$);
 SELECT ops.add_constraint_if_missing('chat', 'message', 'ck_message_message_type', $constraint$CHECK (message_type IN ('TEXT','FILE','SYSTEM'))$constraint$);
+SELECT ops.add_constraint_if_missing('chat', 'conversation_participant', 'ck_conversation_participant_dates', $constraint$CHECK (left_at IS NULL OR left_at >= joined_at)$constraint$);
+SELECT ops.add_constraint_if_missing('chat', 'message_receipt', 'ck_message_receipt_dates', $constraint$CHECK ((delivered_at IS NOT NULL OR read_at IS NOT NULL) AND (read_at IS NULL OR (delivered_at IS NOT NULL AND read_at >= delivered_at)))$constraint$);
 SELECT ops.add_constraint_if_missing('notification', 'notification_policy', 'ck_notification_policy_channel', $constraint$CHECK (channel IN ('PUSH','EMAIL','IN_APP'))$constraint$);
 SELECT ops.add_constraint_if_missing('notification', 'notification_policy', 'ck_notification_policy_status', $constraint$CHECK (status IN ('DRAFT','ACTIVE','RETIRED'))$constraint$);
 SELECT ops.add_constraint_if_missing('notification', 'notification_policy', 'ck_notification_policy_quiet_hours_behavior', $constraint$CHECK (quiet_hours_behavior IN ('DEFER','SUPPRESS','BYPASS'))$constraint$);
@@ -136,6 +173,7 @@ SELECT ops.add_constraint_if_missing('notification', 'notification_delivery_atte
 SELECT ops.add_constraint_if_missing('nlp', 'nlp_ranking_config', 'ck_nlp_ranking_config_weights', $constraint$CHECK (semantic_weight BETWEEN 0 AND 1 AND category_weight BETWEEN 0 AND 1 AND industry_weight BETWEEN 0 AND 1 AND geography_weight BETWEEN 0 AND 1 AND freshness_weight BETWEEN 0 AND 1 AND event_weight BETWEEN 0 AND 1 AND threshold BETWEEN 0 AND 1)$constraint$);
 SELECT ops.add_constraint_if_missing('nlp', 'match_request', 'ck_match_request_limit', $constraint$CHECK (requested_limit BETWEEN 3 AND 7)$constraint$);
 SELECT ops.add_constraint_if_missing('nlp', 'nlp_match_result', 'ck_nlp_match_result_scores', $constraint$CHECK (semantic_score BETWEEN 0 AND 1 AND (reciprocal_score IS NULL OR reciprocal_score BETWEEN 0 AND 1) AND final_score BETWEEN 0 AND 1 AND rank > 0)$constraint$);
+SELECT ops.add_constraint_if_missing('nlp', 'match_suppression', 'ck_match_suppression_target', $constraint$CHECK ((member_id IS NOT NULL OR intent_id IS NOT NULL OR context_id IS NOT NULL) AND (ends_at IS NULL OR ends_at > starts_at))$constraint$);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_community_name ON core.community (name);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_member_identity_provider_subject_hash ON iam.member_identity (provider, provider_subject_hash);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_member_identity_primary ON iam.member_identity (member_id) WHERE is_primary IS TRUE;
@@ -143,6 +181,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_role_name ON iam.role (name);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_organization_community_name ON core.organization (community_id, normalized_name);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_organization_member_active ON core.organization_member (organization_id, member_id) WHERE ended_on IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_member_sector_primary ON core.member_sector (member_id) WHERE is_primary IS TRUE;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_sector_questionnaire_active ON core.sector_questionnaire (sector_code) WHERE status = 'ACTIVE';
+CREATE UNIQUE INDEX IF NOT EXISTS ux_profile_question_scope_version ON core.profile_question (sector_code, question_code, question_version) NULLS NOT DISTINCT;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_profile_question_active ON core.profile_question (sector_code, question_code) NULLS NOT DISTINCT WHERE status = 'ACTIVE';
+CREATE UNIQUE INDEX IF NOT EXISTS ux_sector_questionnaire_question_version ON core.sector_questionnaire_question (sector_questionnaire_id, definition_version, profile_question_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_member_questionnaire_response_version ON core.member_questionnaire_response (member_id, sector_questionnaire_id, definition_version);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_member_question_answer_question ON core.member_question_answer (member_questionnaire_response_id, profile_question_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_member_geography_primary ON core.member_geography (member_id) WHERE is_primary IS TRUE;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_consent_policy_purpose_version_locale ON consent.consent_policy (purpose_code, version, locale);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_event_matching_policy_version ON event.event_matching_policy (event_id, policy_version);
@@ -241,6 +285,7 @@ SELECT ops.add_constraint_if_missing('storage', 'file_asset', 'ck_file_asset_cla
 SELECT ops.add_constraint_if_missing('storage', 'file_asset', 'ck_file_asset_lifecycle', $constraint$CHECK (size_bytes >= 0 AND scan_status IN ('PENDING','CLEAN','REJECTED','ERROR') AND lifecycle_status IN ('UPLOADING','AVAILABLE','QUARANTINED','DELETED','EXPIRED') AND (lifecycle_status <> 'AVAILABLE' OR scan_status = 'CLEAN') AND (lifecycle_status NOT IN ('DELETED','EXPIRED') OR deleted_at IS NOT NULL))$constraint$);
 SELECT ops.add_constraint_if_missing('storage', 'file_asset_link', 'ck_file_asset_link_values', $constraint$CHECK (resource_type IN ('MESSAGE','MEMBER_VERIFICATION','PRIVACY_REQUEST','EVALUATION_RUN') AND relationship_type IN ('PRIMARY','EVIDENCE','RESULT','REPORT'))$constraint$);
 SELECT ops.add_constraint_if_missing('ops', 'sync_change', 'ck_sync_change_values', $constraint$CHECK (change_type IN ('UPSERT','DELETE') AND resource_type IN ('PROFILE','MATCH','REQUEST','CONVERSATION','MESSAGE','NOTIFICATION') AND expires_at > occurred_at)$constraint$);
+SELECT ops.add_constraint_if_missing('ops', 'idempotency_record', 'ck_idempotency_record_completion', $constraint$CHECK (expires_at > created_at AND (status_code IS NULL OR status_code BETWEEN 100 AND 599) AND ((status_code IS NULL) = (response_ref IS NULL)))$constraint$);
 SELECT ops.add_constraint_if_missing('ops', 'retention_policy', 'ck_retention_policy_values', $constraint$CHECK (policy_version > 0 AND retention_days >= 0 AND status IN ('DRAFT','ACTIVE','RETIRED') AND disposition_action IN ('DELETE','ANONYMIZE','ARCHIVE') AND (effective_to IS NULL OR effective_to > effective_from))$constraint$);
 SELECT ops.add_constraint_if_missing('ops', 'retention_execution', 'ck_retention_execution_values', $constraint$CHECK (scope_end > scope_start AND status IN ('RUNNING','SUCCEEDED','PARTIAL','FAILED') AND examined_count >= 0 AND disposed_count >= 0 AND skipped_hold_count >= 0 AND disposed_count + skipped_hold_count <= examined_count AND (status = 'RUNNING' OR completed_at IS NOT NULL))$constraint$);
 -- v2.3 lookup, uniqueness and worker access paths.
@@ -276,6 +321,10 @@ CREATE INDEX IF NOT EXISTS ix_member_profile_updated_at ON core.member_profile (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sector_name ON core.sector (name);
 CREATE INDEX IF NOT EXISTS ix_sector_parent_sector_code_status ON core.sector (parent_sector_code, status);
 CREATE INDEX IF NOT EXISTS ix_member_sector_sector_code_member_id ON core.member_sector (sector_code, member_id);
+CREATE INDEX IF NOT EXISTS ix_profile_question_sector_status_sort ON core.profile_question (sector_code, status, sort_order);
+CREATE INDEX IF NOT EXISTS ix_sector_questionnaire_question_definition ON core.sector_questionnaire_question (sector_questionnaire_id, definition_version, sort_order);
+CREATE INDEX IF NOT EXISTS ix_member_questionnaire_response_member_status ON core.member_questionnaire_response (member_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS ix_member_question_answer_response ON core.member_question_answer (member_questionnaire_response_id);
 CREATE INDEX IF NOT EXISTS ix_member_geography_member_id_is_primary ON core.member_geography (member_id, is_primary);
 CREATE INDEX IF NOT EXISTS ix_member_geography_country_code_region_city ON core.member_geography (country_code, region, city);
 CREATE INDEX IF NOT EXISTS ix_profile_field_visibility_audience ON core.profile_field_visibility (audience);
@@ -283,6 +332,8 @@ CREATE INDEX IF NOT EXISTS ix_member_verification_member_id_status ON core.membe
 CREATE INDEX IF NOT EXISTS ix_member_verification_status_created_at ON core.member_verification (status, created_at);
 CREATE INDEX IF NOT EXISTS ix_member_status_updated_at ON iam.member (status, updated_at);
 CREATE INDEX IF NOT EXISTS ix_member_identity_member_id_is_primary ON iam.member_identity (member_id, is_primary);
+CREATE INDEX IF NOT EXISTS ix_member_identity_member_id_status ON iam.member_identity (member_id, status);
+CREATE INDEX IF NOT EXISTS ix_role_status ON iam.role (status);
 CREATE INDEX IF NOT EXISTS ix_member_role_role_code_expires_at ON iam.member_role (role_code, expires_at);
 CREATE INDEX IF NOT EXISTS ix_member_device_member_id_status ON iam.member_device (member_id, status);
 CREATE INDEX IF NOT EXISTS ix_member_device_last_seen_at ON iam.member_device (last_seen_at);
@@ -292,6 +343,7 @@ CREATE INDEX IF NOT EXISTS ix_member_consent_policy_id_decision ON consent.membe
 CREATE INDEX IF NOT EXISTS ix_privacy_request_status_due_at ON consent.privacy_request (status, due_at);
 CREATE INDEX IF NOT EXISTS ix_privacy_request_member_id_created_at ON consent.privacy_request (member_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_venue_country_code_region_city ON event.venue (country_code, region, city);
+CREATE INDEX IF NOT EXISTS ix_venue_status_country_code_region_city ON event.venue (status, country_code, region, city);
 CREATE INDEX IF NOT EXISTS ix_event_venue_id_starts_at ON event.event (venue_id, starts_at);
 CREATE INDEX IF NOT EXISTS ix_event_matching_policy_status_effective_from_effective_to ON event.event_matching_policy (status, effective_from, effective_to);
 CREATE INDEX IF NOT EXISTS ix_event_registration_member_id_status ON event.event_registration (member_id, status);

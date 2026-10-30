@@ -1,49 +1,61 @@
-# OLGA Connect PostgreSQL deployment package
+# OLGA Connect PostgreSQL database
 
-This package creates the OLGA Connect Release 1 schema defined by Database Architecture and Table-Level Design v2.3. The clean baseline targets PostgreSQL 17 on Azure Database for PostgreSQL Flexible Server and uses lower_snake_case physical identifiers throughout.
+PostgreSQL 17 baseline for OLGA Connect Release 1 on Azure Database for PostgreSQL Flexible
+Server. Physical identifiers use lower_snake_case and the database is organized by bounded domain
+schemas inside one database.
 
-## Baseline contents
+## Repository contents
 
-- `001_schemas_sequences.sql`: domain schemas, approved extensions, sequences, and shared migration helpers.
-- `010_tables.sql`: all 66 documented product tables, PostgreSQL types, and trigger-managed concurrency versions.
-- `020_constraints_indexes.sql`: idempotent foreign keys, checks, unique rules, and partial B-tree indexes.
-- `025_invariants.sql`: cross-row and polymorphic integrity triggers.
-- `030_views.sql`: controlled security and integration views.
-- `040_procedures.sql`: eight PostgreSQL functions for bounded reads and atomic workflows.
-- `050_seed.sql`: roles, permissions, `ranking-v1`, and optional provisional QA notification policies.
-- `060_security.sql`: NOLOGIN service roles and least-privilege grants.
-- `070_bind_identities.template.sql`: PostgreSQL role-membership template for pre-provisioned Azure identities.
-- `090_verify.sql`: post-deployment inventory, type, constraint, index, and seed checks.
-- `deploy.sql` and `deploy.ps1`: psql deployment entry points.
-- `azure-postgresql-deployment-inputs.example.json`: PostgreSQL Flexible Server provisioning inputs without credentials.
-- `OLGA_Connect_PostgreSQL_Full_Setup.sql`: standalone transactional setup script.
-
-The legacy v2.2 Azure SQL upgrade files remain source-reference artifacts and are not part of the PostgreSQL baseline manifest. Migrate populated SQL Server databases through a separately reviewed data-migration plan; do not execute those upgrade files against PostgreSQL.
+- `001_schemas_sequences.sql` through `090_verify.sql`: ordered, maintainable schema source.
+- `build_full_setup.ps1`: rebuilds the standalone setup from the ordered source modules.
+- `OLGA_Connect_PostgreSQL_Full_Setup.sql`: generated, transactional setup for a new database.
+- `migrations/003_v2_4_to_v2_5_profile_image.sql` through
+  `migrations/006_v2_7_to_v2_8_industry_questionnaire.sql`: ordered, rerunnable upgrades from the
+  generated v2.4 baseline to the current v2.8 schema.
+- `deploy_dbeaver.sql` and `deploy_dbeaver_prd.sql`: optional DBeaver database-name guards for
+  `olga_connect_dev` and `olga_connect_prod`.
+- `migrate_dev_roles.sql`: one-time, data-preserving migration from the former service roles to
+  `olga_ddl_admin`, `olga_dml_writer`, `olga_reader`, and `olga_nlp_worker` in an existing
+  development database.
+- `deploy_dev_matching_consent.sql`: guarded, rerunnable publication of the development `MATCHING`
+  consent policy and enforcement of `check_in_required = false` for its explicitly listed dev events.
+- `070_bind_identities.template.sql`: non-executable reference for pre-provisioned Azure identities.
+- `bind_nlp_identities.sql`: guarded one-time identity-membership script for the environment's NLP
+  API and worker managed identities. It aborts before granting if an expected role is absent.
+- `deploy_nlp_runtime.sql`: guarded, rerunnable manual upgrade for the active embedding model and
+  least-privilege NLP worker role in either approved database.
+- `tests/validate_static.py`: static consistency and architecture validation.
+- `tests/seed_test_data.sql`: rerunnable development/test fixture with at least one coherent row in
+  every application table; never run it in production.
+- `tests/verify_chat_atomicity.sql` and `tests/verify_temporal_history.sql`: rollback-only
+  integration tests for a development/test database.
+- `docs/dbeaver-deployment.md`: concise deployment and recovery runbook.
+- `docs/database-requirements-and-table-guide.md`: team guide to product requirements, table purposes,
+  relationships and protected workflows.
+- `docs/architecture-decisions-v2.4.md`: security, lifecycle, history and matching decisions that
+  are not self-evident from the DDL.
 
 ## Prerequisites
 
-- PostgreSQL 17 database with the `vector` and `pg_stat_statements` extensions allowlisted.
-- A deployment identity permitted to create schemas, extensions, NOLOGIN roles, tables, functions, and grants.
-- `psql` available on the deployment workstation or runner.
-- TLS connectivity to the PostgreSQL endpoint; secrets supplied through `.pgpass`, `PGPASSFILE`, or the approved identity workflow.
+- PostgreSQL 17.
+- The `vector` and `pg_stat_statements` extensions allowlisted on the Azure server.
+- A migration identity permitted to create schemas, extensions, `NOLOGIN` roles, tables, functions
+  and grants. The setup grants this identity membership in `olga_ddl_admin` and creates all OLGA
+  objects under that owner role.
+- TLS certificate verification configured in the database client.
 
 ## Deploy
 
 Follow [the DBeaver runbook](docs/dbeaver-deployment.md). The normal deployment artifact is
 `OLGA_Connect_PostgreSQL_Full_Setup.sql`; execute it as a script, not as individual statements.
+It creates schema v2.4. Immediately apply migrations `003` through `006`, in order, to reach the
+current v2.8 application baseline. Do not deploy the questionnaire-enabled Core API against a
+schema older than v2.8.
 
 `070_bind_identities.template.sql` is a non-executable reference and is intentionally excluded from
 the baseline. After the Azure managed identities have been mapped into PostgreSQL, execute the
 `bind_nlp_identities.sql` script. It only adds NLP API/worker memberships and does not modify other
-roles. This separate NLP binding is intended for development or an NLP-only update; it is not
-needed after the complete production binding below.
-
-For production identity provisioning, replace the two placeholders in
-`map_prod_identities.template.sql` and `bind_prod_identities.template.sql`. Run the mapping template
-against the server's `postgres` database as its Microsoft Entra administrator, then run the binding
-template against `olga_connect_prod` as the migration identity. The binding removes unintended OLGA
-role memberships from runtime identities before granting their approved roles. The migration
-identity retains all four OLGA database roles for deployment and operational support.
+roles.
 
 For a database that already has the baseline, execute `deploy_nlp_runtime.sql` manually. It checks
 the database name, takes the migration advisory lock, applies the model/worker delta
@@ -53,36 +65,55 @@ For a development database deployed with the former 13 service roles, run
 `migrate_dev_roles.sql` once as its existing migration owner. It preserves data and removes those
 obsolete roles after transferring ownership and privileges.
 
+For an existing development database that does not yet have matching consent, execute
+`deploy_dev_matching_consent.sql` as a script. Members must still accept the published policy through
+the application; the deployment does not create consent evidence for real members.
+
 ## Maintain
 
 Edit the numbered source modules, not the generated full-setup file. Rebuild it afterward:
 
 ```powershell
-.\deploy.ps1 `
-  -ServerFqdn '<server>.postgres.database.azure.com' `
-  -DatabaseName '<database>' `
-  -UserName '<deployment-user>'
+.\build_full_setup.ps1
 ```
 
-Pass `-SeedMvpPolicies 1` only for approved QA environments. The default is fail-closed and does not activate provisional notification policies.
-
-The standalone script can be executed with any PostgreSQL client that preserves the transaction. It intentionally omits psql variables, so provisional policies remain disabled.
-
-## Architecture constraints preserved
-
-- Product ownership remains separated by domain schema; NLP consumes controlled projections and does not grant visibility or communication rights.
-- UTC business timestamps use `timestamptz` and `CURRENT_TIMESTAMP`.
-- Mutable API resources use `bigint row_version`, incremented by a shared `BEFORE UPDATE` trigger and returned as an ETag by APIs.
-- Internal numeric keys use `GENERATED BY DEFAULT AS IDENTITY`; stable API identifiers remain opaque `varchar(64)` values.
-- Validated metadata and snapshots use `jsonb`; encrypted values use `bytea`.
-- NLP embeddings use `vector(1536)`. Exact bounded retrieval remains the baseline; add HNSW only after representative latency and recall evidence.
-- Partial unique indexes enforce active-row invariants. Nullable notification-policy scope uses `NULLS NOT DISTINCT`.
-- Runtime roles receive no DDL privileges. Append-only audit and authorization catalogs explicitly revoke destructive writes.
-
-## Verification
+Then run:
 
 ```powershell
-& '<bundled-or-approved-python>' .\tests\validate_static.py
+& '<approved-python>' .\tests\validate_static.py
 ```
 
-`090_verify.sql` also runs inside the deployment transaction and rolls back the baseline if required objects, PostgreSQL-native types, validated constraints, valid indexes, or authorization seeds are missing.
+The validator confirms the product-table inventory, PostgreSQL-native types, constraints, indexes,
+controlled functions and that the generated setup contains every current source module.
+
+## Database verification
+
+`090_verify.sql` is included at the end of the full setup. A failed check aborts the deployment
+transaction.
+
+On development/test only, execute these with a migration-owner connection:
+
+1. `tests/seed_test_data.sql` to populate persistent development/test fixture data (optional).
+2. `tests/verify_temporal_history.sql`
+3. `tests/verify_chat_atomicity.sql`
+4. `tests/verify_core_outbox_leasing.sql`
+
+The verification tests are self-contained and finish with `ROLLBACK`; the seed script commits its
+fixture rows and is safe to rerun.
+
+## Guardrails
+
+- Domain schemas are namespaces and permission boundaries within one transactional database.
+- Mutable API resources use trigger-managed `bigint row_version` values for ETags.
+- Internal numeric keys use identity columns; external IDs remain opaque `varchar(64)`.
+- Sensitive ciphertext uses `bytea`; business timestamps use `timestamptz`.
+- NLP embeddings use `vector(1536)`; matching applies eligibility first and exact cosine distance
+  to a bounded candidate set. ANN indexes are intentionally absent.
+- Connection, chat and receipt mutations use actor-scoped idempotency, transactional outbox and
+  member-scoped synchronization records.
+- Profile-image bytes remain in object storage; PostgreSQL stores versioned image metadata and
+  processing state in `core.member_profile_image`.
+- Core outbox publishers claim bounded batches with expiring leases, renew ownership before slow
+  publishes, schedule bounded retries, and mark permanently failed or exhausted events explicitly.
+- The owned system-period trigger writes selected reference/configuration history without granting
+  application roles direct access to history tables.

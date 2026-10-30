@@ -13,8 +13,15 @@ AS $$
            i.category, i.industry, i.geography, i.updated_at,
            e.model_version, e.dimensions, e.normalized_hash, e.embedding
     FROM nlp.nlp_intent i
-    JOIN nlp.nlp_embedding e ON e.intent_id = i.intent_id AND e.status = 'ACTIVE'
-    JOIN nlp.nlp_model_version mv ON mv.model_version = e.model_version AND mv.status = 'ACTIVE'
+    JOIN nlp.nlp_embedding e
+      ON e.intent_id = i.intent_id
+     AND e.status = 'ACTIVE'
+     AND e.normalized_hash = i.normalized_hash
+    JOIN nlp.nlp_model_version mv
+      ON mv.model_version = e.model_version
+     AND mv.status = 'ACTIVE'
+     AND mv.dimensions = e.dimensions
+     AND mv.preprocessing_version = i.preprocessing_version
     WHERE i.intent_id = p_intent_id AND i.member_id = p_member_id AND i.context_id = p_context_id
       AND i.status = 'MATCH_READY' AND i.expires_at > CURRENT_TIMESTAMP;
 $$;
@@ -36,11 +43,30 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'max_rows must be between 50 and 200.';
     END IF;
     RETURN QUERY
-    WITH requester_embedding AS MATERIALIZED (
-        SELECT e.embedding
+    WITH requester_scope AS MATERIALIZED (
+        SELECT eligibility.community_id
+        FROM nlp.vw_member_context_eligibility eligibility
+        WHERE eligibility.member_id = p_requester_id
+          AND eligibility.context_id = p_context_id
+          AND eligibility.is_live
+          AND eligibility.is_visible
+          AND eligibility.has_consent
+          AND NOT eligibility.is_suspended
+          AND NOT eligibility.is_deleted
+        LIMIT 1
+    ), requester_embedding AS MATERIALIZED (
+        SELECT i.intent_id, e.embedding
         FROM nlp.nlp_intent i
-        JOIN nlp.nlp_embedding e ON e.intent_id = i.intent_id AND e.status = 'ACTIVE'
-        JOIN nlp.nlp_model_version mv ON mv.model_version = e.model_version AND mv.status = 'ACTIVE'
+        CROSS JOIN requester_scope
+        JOIN nlp.nlp_embedding e
+          ON e.intent_id = i.intent_id
+         AND e.status = 'ACTIVE'
+         AND e.normalized_hash = i.normalized_hash
+        JOIN nlp.nlp_model_version mv
+          ON mv.model_version = e.model_version
+         AND mv.status = 'ACTIVE'
+         AND mv.dimensions = e.dimensions
+         AND mv.preprocessing_version = i.preprocessing_version
         WHERE i.member_id = p_requester_id AND i.context_id = p_context_id
           AND i.intent_type = 'WANT' AND i.status = 'MATCH_READY' AND i.expires_at > CURRENT_TIMESTAMP
         ORDER BY i.updated_at DESC, i.intent_id
@@ -56,17 +82,13 @@ BEGIN
     ), eligible_members AS MATERIALIZED (
         SELECT m.member_id
         FROM nlp.vw_member_context_eligibility m
+        JOIN requester_scope requester ON requester.community_id = m.community_id
         WHERE m.context_id = p_context_id AND m.member_id <> p_requester_id
           AND m.is_live AND m.is_visible AND m.has_consent AND NOT m.is_suspended AND NOT m.is_deleted
           AND NOT EXISTS (
               SELECT 1 FROM nlp.vw_member_relationship r
               WHERE r.context_id = 'GLOBAL' AND r.member_id = p_requester_id AND r.other_member_id = m.member_id
                 AND (r.is_blocked OR r.is_connected)
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM nlp.match_suppression s
-              WHERE s.starts_at <= CURRENT_TIMESTAMP AND (s.ends_at IS NULL OR s.ends_at > CURRENT_TIMESTAMP)
-                AND (s.member_id = m.member_id OR s.context_id = p_context_id)
           )
           AND (
               NOT EXISTS (SELECT 1 FROM matching_policy p WHERE p.proximity_mode = 'COARSE_CELL')
@@ -97,9 +119,26 @@ BEGIN
                e.model_version, e.dimensions, e.normalized_hash AS embedding_hash, e.embedding
         FROM eligible_members m
         JOIN nlp.nlp_intent i ON i.member_id = m.member_id AND i.context_id = p_context_id
-        JOIN nlp.nlp_embedding e ON e.intent_id = i.intent_id AND e.status = 'ACTIVE'
-        JOIN nlp.nlp_model_version mv ON mv.model_version = e.model_version AND mv.status = 'ACTIVE'
+        JOIN nlp.nlp_embedding e
+          ON e.intent_id = i.intent_id
+         AND e.status = 'ACTIVE'
+         AND e.normalized_hash = i.normalized_hash
+        JOIN nlp.nlp_model_version mv
+          ON mv.model_version = e.model_version
+         AND mv.status = 'ACTIVE'
+         AND mv.dimensions = e.dimensions
+         AND mv.preprocessing_version = i.preprocessing_version
+        CROSS JOIN requester_embedding requester
         WHERE i.intent_type = 'OFFER' AND i.status = 'MATCH_READY' AND i.expires_at > CURRENT_TIMESTAMP
+          AND NOT EXISTS (
+              SELECT 1
+              FROM nlp.match_suppression s
+              WHERE s.starts_at <= CURRENT_TIMESTAMP
+                AND (s.ends_at IS NULL OR s.ends_at > CURRENT_TIMESTAMP)
+                AND (s.member_id IS NULL OR s.member_id IN (p_requester_id, m.member_id))
+                AND (s.context_id IS NULL OR s.context_id = p_context_id)
+                AND (s.intent_id IS NULL OR s.intent_id IN (requester.intent_id, i.intent_id))
+          )
         ORDER BY i.updated_at DESC, i.intent_id
         LIMIT p_max_rows
     )
@@ -193,25 +232,55 @@ BEGIN
 END;
 $$;
 
+DROP FUNCTION IF EXISTS social.accept_connection_request(varchar, varchar, varchar, varchar);
 CREATE OR REPLACE FUNCTION social.accept_connection_request(
     p_connection_request_id varchar(64), p_recipient_member_id varchar(64),
-    p_connection_id varchar(64), p_conversation_id varchar(64)
+    p_connection_id varchar(64), p_conversation_id varchar(64),
+    p_idempotency_key varchar(128), p_request_hash char(64),
+    p_idempotency_expires_at timestamptz, p_sync_expires_at timestamptz
 )
 RETURNS TABLE (connection_id varchar(64), conversation_id varchar(64))
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, social, chat, ops, iam
 AS $$
 DECLARE
     v_sender_id varchar(64);
+    v_community_id varchar(64);
+    v_request_version bigint;
     v_existing_connection_id varchar(64);
     v_existing_conversation_id varchar(64);
+    v_existing_hash char(64);
+    v_idempotency_status smallint;
+    v_claimed boolean := false;
 BEGIN
-    SELECT sender_member_id INTO v_sender_id
-    FROM social.connection_request
-    WHERE connection_request_id = p_connection_request_id
-      AND recipient_member_id = p_recipient_member_id
-      AND status = 'PENDING' AND expires_at > CURRENT_TIMESTAMP
+    IF p_idempotency_key IS NULL OR btrim(p_idempotency_key) = '' OR p_request_hash IS NULL THEN
+        RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'Idempotency key and request hash are required.';
+    END IF;
+    IF p_idempotency_expires_at <= CURRENT_TIMESTAMP OR p_sync_expires_at <= CURRENT_TIMESTAMP THEN
+        RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'Idempotency and sync expiry must be in the future.';
+    END IF;
+
+    INSERT INTO ops.idempotency_record(scope, idempotency_key, actor_id, request_hash, expires_at)
+    VALUES ('social.accept_connection_request', p_idempotency_key, p_recipient_member_id, p_request_hash, p_idempotency_expires_at)
+    ON CONFLICT (scope, actor_id, idempotency_key) DO NOTHING
+    RETURNING true INTO v_claimed;
+
+    SELECT request_hash, status_code
+    INTO v_existing_hash, v_idempotency_status
+    FROM ops.idempotency_record
+    WHERE scope = 'social.accept_connection_request'
+      AND actor_id = p_recipient_member_id
+      AND idempotency_key = p_idempotency_key
     FOR UPDATE;
-    IF v_sender_id IS NULL THEN
+
+    IF v_existing_hash IS DISTINCT FROM p_request_hash THEN
+        RAISE EXCEPTION USING ERRCODE = '23505', MESSAGE = 'Idempotency key was already used with a different request.';
+    END IF;
+    IF NOT COALESCE(v_claimed, false) THEN
+        IF v_idempotency_status IS NULL THEN
+            RAISE EXCEPTION USING ERRCODE = '55P03', MESSAGE = 'Idempotent operation is still in progress.';
+        END IF;
         SELECT c.connection_id, cv.conversation_id
         INTO v_existing_connection_id, v_existing_conversation_id
         FROM social.connection c
@@ -222,7 +291,23 @@ BEGIN
             RETURN QUERY SELECT v_existing_connection_id, v_existing_conversation_id;
             RETURN;
         END IF;
-        RAISE EXCEPTION USING ERRCODE = 'P0002', MESSAGE = 'Pending connection request not found.';
+        RAISE EXCEPTION USING ERRCODE = '23505', MESSAGE = 'Idempotency result does not match the requested resource identifiers.';
+    END IF;
+
+    SELECT cr.sender_member_id, sender.community_id
+    INTO v_sender_id, v_community_id
+    FROM social.connection_request cr
+    JOIN iam.member sender ON sender.member_id = cr.sender_member_id AND sender.status = 'ACTIVE'
+    JOIN iam.member recipient
+      ON recipient.member_id = cr.recipient_member_id
+     AND recipient.status = 'ACTIVE'
+     AND recipient.community_id = sender.community_id
+    WHERE cr.connection_request_id = p_connection_request_id
+      AND cr.recipient_member_id = p_recipient_member_id
+      AND cr.status = 'PENDING' AND cr.expires_at > CURRENT_TIMESTAMP
+    FOR UPDATE OF cr;
+    IF v_sender_id IS NULL THEN
+        RAISE EXCEPTION USING ERRCODE = 'P0002', MESSAGE = 'Eligible pending connection request not found.';
     END IF;
     IF EXISTS (
         SELECT 1 FROM social.member_block
@@ -234,7 +319,8 @@ BEGIN
     END IF;
     UPDATE social.connection_request
     SET status = 'ACCEPTED', responded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-    WHERE connection_request_id = p_connection_request_id;
+    WHERE connection_request_id = p_connection_request_id
+    RETURNING row_version INTO v_request_version;
     INSERT INTO social.connection(connection_id, member_low_id, member_high_id, accepted_request_id)
     VALUES (p_connection_id, LEAST(v_sender_id, p_recipient_member_id), GREATEST(v_sender_id, p_recipient_member_id), p_connection_request_id);
     INSERT INTO chat.conversation(conversation_id, connection_id) VALUES (p_conversation_id, p_connection_id);
@@ -243,21 +329,92 @@ BEGIN
     INSERT INTO ops.outbox_event(outbox_event_id, aggregate_type, aggregate_id, event_type, payload_json)
     VALUES (gen_random_uuid()::text, 'CONNECTION', p_connection_id, 'connection.accepted',
             jsonb_build_object('connectionId', p_connection_id, 'conversationId', p_conversation_id));
+
+    INSERT INTO ops.sync_change(
+        community_id, member_scope_id, resource_type, resource_id, change_type,
+        resource_version, payload_json, expires_at
+    )
+    SELECT v_community_id, member_id, 'REQUEST', p_connection_request_id, 'UPSERT',
+           v_request_version,
+           jsonb_build_object('requestId', p_connection_request_id, 'status', 'ACCEPTED'),
+           p_sync_expires_at
+    FROM (VALUES (v_sender_id), (p_recipient_member_id)) AS recipients(member_id)
+    UNION ALL
+    SELECT v_community_id, member_id, 'CONVERSATION', p_conversation_id, 'UPSERT',
+           1,
+           jsonb_build_object('conversationId', p_conversation_id, 'connectionId', p_connection_id),
+           p_sync_expires_at
+    FROM (VALUES (v_sender_id), (p_recipient_member_id)) AS recipients(member_id);
+
+    UPDATE ops.idempotency_record
+    SET status_code = 200, response_ref = p_connection_id || ':' || p_conversation_id
+    WHERE scope = 'social.accept_connection_request'
+      AND actor_id = p_recipient_member_id
+      AND idempotency_key = p_idempotency_key;
     RETURN QUERY SELECT p_connection_id, p_conversation_id;
 END;
 $$;
 
+DROP FUNCTION IF EXISTS chat.save_message(varchar, varchar, varchar, varchar, text, timestamptz);
 CREATE OR REPLACE FUNCTION chat.save_message(
     p_message_id varchar(64), p_conversation_id varchar(64), p_sender_member_id varchar(64),
-    p_message_type varchar(20), p_body text DEFAULT NULL, p_client_sent_at timestamptz DEFAULT NULL
+    p_message_type varchar(20), p_body text, p_client_sent_at timestamptz,
+    p_idempotency_key varchar(128), p_request_hash char(64),
+    p_idempotency_expires_at timestamptz, p_sync_expires_at timestamptz
 )
 RETURNS SETOF chat.message
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, chat, ops, iam
 AS $$
+DECLARE
+    v_message chat.message%ROWTYPE;
+    v_existing_hash char(64);
+    v_idempotency_status smallint;
+    v_claimed boolean := false;
+    v_community_id varchar(64);
+    v_recipient_member_id varchar(64);
 BEGIN
+    IF p_idempotency_key IS NULL OR btrim(p_idempotency_key) = '' OR p_request_hash IS NULL THEN
+        RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'Idempotency key and request hash are required.';
+    END IF;
+    IF p_idempotency_expires_at <= CURRENT_TIMESTAMP OR p_sync_expires_at <= CURRENT_TIMESTAMP THEN
+        RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'Idempotency and sync expiry must be in the future.';
+    END IF;
     IF p_message_type NOT IN ('TEXT','FILE','SYSTEM') THEN
         RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'Unsupported message type.';
     END IF;
+
+    INSERT INTO ops.idempotency_record(scope, idempotency_key, actor_id, request_hash, expires_at)
+    VALUES ('chat.save_message', p_idempotency_key, p_sender_member_id, p_request_hash, p_idempotency_expires_at)
+    ON CONFLICT (scope, actor_id, idempotency_key) DO NOTHING
+    RETURNING true INTO v_claimed;
+    SELECT request_hash, status_code
+    INTO v_existing_hash, v_idempotency_status
+    FROM ops.idempotency_record
+    WHERE scope = 'chat.save_message'
+      AND actor_id = p_sender_member_id
+      AND idempotency_key = p_idempotency_key
+    FOR UPDATE;
+    IF v_existing_hash IS DISTINCT FROM p_request_hash THEN
+        RAISE EXCEPTION USING ERRCODE = '23505', MESSAGE = 'Idempotency key was already used with a different request.';
+    END IF;
+    IF NOT COALESCE(v_claimed, false) THEN
+        IF v_idempotency_status IS NULL THEN
+            RAISE EXCEPTION USING ERRCODE = '55P03', MESSAGE = 'Idempotent operation is still in progress.';
+        END IF;
+        SELECT * INTO v_message FROM chat.message WHERE message_id = p_message_id;
+        IF NOT FOUND OR v_message.conversation_id IS DISTINCT FROM p_conversation_id
+           OR v_message.sender_member_id IS DISTINCT FROM p_sender_member_id
+           OR v_message.message_type IS DISTINCT FROM p_message_type
+           OR v_message.body IS DISTINCT FROM p_body
+           OR v_message.client_sent_at IS DISTINCT FROM p_client_sent_at THEN
+            RAISE EXCEPTION USING ERRCODE = '23505', MESSAGE = 'Idempotency result does not match the message request.';
+        END IF;
+        RETURN NEXT v_message;
+        RETURN;
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1 FROM chat.vw_authorized_conversation
         WHERE conversation_id = p_conversation_id AND member_id = p_sender_member_id AND can_send
@@ -265,25 +422,183 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'Member is not authorized to send to this conversation.';
     END IF;
     PERFORM 1 FROM chat.conversation WHERE conversation_id = p_conversation_id FOR UPDATE;
-    IF EXISTS (
-        SELECT 1 FROM chat.message
-        WHERE message_id = p_message_id
-          AND (conversation_id <> p_conversation_id OR sender_member_id <> p_sender_member_id)
-    ) THEN
-        RAISE EXCEPTION USING ERRCODE = '23505', MESSAGE = 'message_id is already bound to another sender or conversation.';
+    IF EXISTS (SELECT 1 FROM chat.message WHERE message_id = p_message_id) THEN
+        RAISE EXCEPTION USING ERRCODE = '23505', MESSAGE = 'message_id is already bound to another idempotent operation.';
     END IF;
     INSERT INTO chat.message(message_id, conversation_id, sender_member_id, message_type, body, client_sent_at)
     VALUES (p_message_id, p_conversation_id, p_sender_member_id, p_message_type, p_body, p_client_sent_at)
-    ON CONFLICT (message_id) DO NOTHING;
-    IF FOUND THEN
-        UPDATE chat.conversation
-        SET last_message_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-        WHERE conversation_id = p_conversation_id;
-        INSERT INTO ops.outbox_event(outbox_event_id, aggregate_type, aggregate_id, event_type, payload_json)
-        VALUES (gen_random_uuid()::text, 'MESSAGE', p_message_id, 'chat.message.created',
-                jsonb_build_object('messageId', p_message_id, 'conversationId', p_conversation_id));
+    RETURNING * INTO v_message;
+
+    UPDATE chat.conversation
+    SET last_message_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    WHERE conversation_id = p_conversation_id;
+
+    SELECT sender.community_id, recipient.member_id
+    INTO v_community_id, v_recipient_member_id
+    FROM iam.member sender
+    JOIN chat.conversation_participant recipient
+      ON recipient.conversation_id = p_conversation_id
+     AND recipient.member_id <> p_sender_member_id
+    WHERE sender.member_id = p_sender_member_id;
+
+    INSERT INTO ops.outbox_event(outbox_event_id, aggregate_type, aggregate_id, event_type, payload_json)
+    VALUES (gen_random_uuid()::text, 'MESSAGE', p_message_id, 'MessageCreated.v1',
+            jsonb_build_object(
+                'message_id', p_message_id,
+                'conversation_id', p_conversation_id,
+                'sender_member_id', p_sender_member_id,
+                'recipient_member_id', v_recipient_member_id,
+                'server_sequence', v_message.server_sequence
+            ));
+    INSERT INTO ops.sync_change(
+        community_id, member_scope_id, resource_type, resource_id, change_type,
+        resource_version, payload_json, expires_at
+    )
+    SELECT v_community_id, cp.member_id, 'MESSAGE', p_message_id, 'UPSERT',
+           v_message.row_version,
+           jsonb_build_object(
+               'messageId', p_message_id,
+               'conversationId', p_conversation_id,
+               'senderMemberId', p_sender_member_id,
+               'serverSequence', v_message.server_sequence
+           ),
+           p_sync_expires_at
+    FROM chat.conversation_participant cp
+    WHERE cp.conversation_id = p_conversation_id;
+
+    UPDATE ops.idempotency_record
+    SET status_code = 200, response_ref = p_message_id
+    WHERE scope = 'chat.save_message'
+      AND actor_id = p_sender_member_id
+      AND idempotency_key = p_idempotency_key;
+    RETURN NEXT v_message;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION chat.save_message_receipt(
+    p_message_id varchar(64), p_member_id varchar(64),
+    p_delivered_at timestamptz, p_read_at timestamptz,
+    p_idempotency_key varchar(128), p_request_hash char(64),
+    p_idempotency_expires_at timestamptz, p_sync_expires_at timestamptz
+)
+RETURNS SETOF chat.message_receipt
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, chat, ops, iam
+AS $$
+DECLARE
+    v_receipt chat.message_receipt%ROWTYPE;
+    v_existing_hash char(64);
+    v_idempotency_status smallint;
+    v_claimed boolean := false;
+    v_changed boolean := false;
+    v_delivered_at timestamptz := COALESCE(p_delivered_at, p_read_at);
+    v_conversation_id varchar(64);
+    v_community_id varchar(64);
+    v_message_version bigint;
+BEGIN
+    IF p_idempotency_key IS NULL OR btrim(p_idempotency_key) = '' OR p_request_hash IS NULL THEN
+        RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'Idempotency key and request hash are required.';
     END IF;
-    RETURN QUERY SELECT m.* FROM chat.message m WHERE m.message_id = p_message_id;
+    IF p_idempotency_expires_at <= CURRENT_TIMESTAMP OR p_sync_expires_at <= CURRENT_TIMESTAMP THEN
+        RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'Idempotency and sync expiry must be in the future.';
+    END IF;
+    IF v_delivered_at IS NULL AND p_read_at IS NULL THEN
+        RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'A delivered or read timestamp is required.';
+    END IF;
+
+    INSERT INTO ops.idempotency_record(scope, idempotency_key, actor_id, request_hash, expires_at)
+    VALUES ('chat.save_message_receipt', p_idempotency_key, p_member_id, p_request_hash, p_idempotency_expires_at)
+    ON CONFLICT (scope, actor_id, idempotency_key) DO NOTHING
+    RETURNING true INTO v_claimed;
+    SELECT request_hash, status_code
+    INTO v_existing_hash, v_idempotency_status
+    FROM ops.idempotency_record
+    WHERE scope = 'chat.save_message_receipt'
+      AND actor_id = p_member_id
+      AND idempotency_key = p_idempotency_key
+    FOR UPDATE;
+    IF v_existing_hash IS DISTINCT FROM p_request_hash THEN
+        RAISE EXCEPTION USING ERRCODE = '23505', MESSAGE = 'Idempotency key was already used with a different request.';
+    END IF;
+    IF NOT COALESCE(v_claimed, false) THEN
+        IF v_idempotency_status IS NULL THEN
+            RAISE EXCEPTION USING ERRCODE = '55P03', MESSAGE = 'Idempotent operation is still in progress.';
+        END IF;
+        SELECT * INTO v_receipt
+        FROM chat.message_receipt
+        WHERE message_id = p_message_id AND member_id = p_member_id;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION USING ERRCODE = '23505', MESSAGE = 'Idempotency result does not match the receipt request.';
+        END IF;
+        RETURN NEXT v_receipt;
+        RETURN;
+    END IF;
+
+    SELECT msg.conversation_id, msg.row_version, sender.community_id
+    INTO v_conversation_id, v_message_version, v_community_id
+    FROM chat.message msg
+    JOIN iam.member sender ON sender.member_id = msg.sender_member_id
+    WHERE msg.message_id = p_message_id
+    FOR UPDATE OF msg;
+    IF v_conversation_id IS NULL THEN
+        RAISE EXCEPTION USING ERRCODE = 'P0002', MESSAGE = 'Message not found.';
+    END IF;
+
+    INSERT INTO chat.message_receipt(message_id, member_id, delivered_at, read_at)
+    VALUES (p_message_id, p_member_id, v_delivered_at, p_read_at)
+    ON CONFLICT (message_id, member_id) DO UPDATE
+    SET delivered_at = COALESCE(chat.message_receipt.delivered_at, EXCLUDED.delivered_at),
+        read_at = COALESCE(chat.message_receipt.read_at, EXCLUDED.read_at),
+        updated_at = CURRENT_TIMESTAMP
+    WHERE (chat.message_receipt.delivered_at IS NULL AND EXCLUDED.delivered_at IS NOT NULL)
+       OR (chat.message_receipt.read_at IS NULL AND EXCLUDED.read_at IS NOT NULL)
+    RETURNING * INTO v_receipt;
+    v_changed := FOUND;
+    IF NOT v_changed THEN
+        SELECT * INTO v_receipt
+        FROM chat.message_receipt
+        WHERE message_id = p_message_id AND member_id = p_member_id;
+    END IF;
+
+    IF p_read_at IS NOT NULL THEN
+        UPDATE chat.conversation_participant cp
+        SET last_read_message_id = p_message_id
+        WHERE cp.conversation_id = v_conversation_id
+          AND cp.member_id = p_member_id
+          AND (
+              cp.last_read_message_id IS NULL
+              OR (SELECT old_message.server_sequence FROM chat.message old_message
+                  WHERE old_message.message_id = cp.last_read_message_id) <=
+                 (SELECT current_message.server_sequence FROM chat.message current_message
+                  WHERE current_message.message_id = p_message_id)
+          );
+    END IF;
+
+    IF v_changed THEN
+        INSERT INTO ops.sync_change(
+            community_id, member_scope_id, resource_type, resource_id, change_type,
+            resource_version, payload_json, expires_at
+        )
+        SELECT v_community_id, cp.member_id, 'MESSAGE', p_message_id, 'UPSERT',
+               v_message_version,
+               jsonb_build_object(
+                   'messageId', p_message_id,
+                   'receiptMemberId', p_member_id,
+                   'isDelivered', v_receipt.delivered_at IS NOT NULL,
+                   'isRead', v_receipt.read_at IS NOT NULL
+               ),
+               p_sync_expires_at
+        FROM chat.conversation_participant cp
+        WHERE cp.conversation_id = v_conversation_id;
+    END IF;
+
+    UPDATE ops.idempotency_record
+    SET status_code = 200, response_ref = p_message_id || ':' || p_member_id
+    WHERE scope = 'chat.save_message_receipt'
+      AND actor_id = p_member_id
+      AND idempotency_key = p_idempotency_key;
+    RETURN NEXT v_receipt;
 END;
 $$;
 

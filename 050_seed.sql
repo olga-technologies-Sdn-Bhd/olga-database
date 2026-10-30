@@ -1,3 +1,9 @@
+-- Release 1 operates within a single default OLGA community.
+-- Preserve any production-managed values when the row already exists.
+INSERT INTO core.community(community_id, name, status, default_locale)
+VALUES ('olga', 'OLGA', 'ACTIVE', 'en-IN')
+ON CONFLICT (community_id) DO NOTHING;
+
 INSERT INTO iam.role(role_code, name, description, is_privileged) VALUES
     ('MEMBER','Member','Standard product member',false),
     ('ADMIN','Administrator','Privileged product administration through explicit permissions',true),
@@ -56,6 +62,31 @@ INSERT INTO iam.role_permission(role_code, permission_code) VALUES
     ('ADMIN','PROFILE_READ'),('ADMIN','EVENT_READ'),('ADMIN','EVENT_CONFIGURE'),('ADMIN','MODERATION_READ'),('ADMIN','MODERATION_APPROVE'),
     ('ADMIN','NLP_EVALUATION_READ'),('ADMIN','NLP_EVALUATION_CONFIGURE'),('ADMIN','PRIVACY_READ'),('ADMIN','PRIVACY_APPROVE'),('ADMIN','ROLE_CONFIGURE')
 ON CONFLICT (role_code, permission_code) DO UPDATE SET revoked_at = NULL;
+
+UPDATE nlp.nlp_model_version
+SET status = 'RETIRED',
+    updated_at = CURRENT_TIMESTAMP
+WHERE status = 'ACTIVE'
+  AND model_version <> 'azure-text-embedding-3-small-1536-v1';
+
+INSERT INTO nlp.nlp_model_version(
+    model_version, provider, deployment_name, dimensions, preprocessing_version, status, activated_at
+) VALUES (
+    'azure-text-embedding-3-small-1536-v1', 'AZURE_OPENAI', 'text-embedding-3-small',
+    1536, 'normalizer-v1', 'ACTIVE', CURRENT_TIMESTAMP
+)
+ON CONFLICT (model_version) DO UPDATE SET
+    provider = EXCLUDED.provider,
+    deployment_name = EXCLUDED.deployment_name,
+    dimensions = EXCLUDED.dimensions,
+    preprocessing_version = EXCLUDED.preprocessing_version,
+    status = 'ACTIVE',
+    activated_at = CASE
+        WHEN nlp.nlp_model_version.status = 'ACTIVE'
+            THEN COALESCE(nlp.nlp_model_version.activated_at, EXCLUDED.activated_at)
+        ELSE EXCLUDED.activated_at
+    END,
+    updated_at = CURRENT_TIMESTAMP;
 
 INSERT INTO nlp.nlp_ranking_config(
     ranking_version, semantic_weight, category_weight, industry_weight, geography_weight,
