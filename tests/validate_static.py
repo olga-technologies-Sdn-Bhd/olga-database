@@ -8,24 +8,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_FILES = [
     "001_schemas_sequences.sql", "010_tables.sql", "015_audit_history.sql", "020_constraints_indexes.sql", "025_invariants.sql",
-    "030_views.sql", "040_procedures.sql", "050_seed.sql", "055_industry_questionnaire_seed.sql", "060_security.sql", "090_verify.sql",
+    "030_views.sql", "040_procedures.sql", "050_seed.sql", "055_industry_questionnaire_seed.sql", "060_security.sql", "065_social_capital_index.sql", "090_verify.sql",
+]
+UPGRADE_FILES = [
+    "migrations/003_v2_4_to_v2_5_profile_image.sql",
+    "migrations/004_v2_5_to_v2_6_core_outbox_leasing.sql",
+    "migrations/005_v2_6_to_v2_7_chat_outbox_contract.sql",
+    "migrations/006_v2_7_to_v2_8_industry_questionnaire.sql",
+    "migrations/007_v2_8_to_v2_9_social_capital_index.sql",
 ]
 EXPECTED_TABLES = {
     "core.community", "core.organization", "core.organization_member", "core.member_profile", "core.sector",
     "core.member_sector", "core.sector_questionnaire", "core.profile_question", "core.sector_questionnaire_question", "core.member_questionnaire_response",
     "core.member_question_answer", "core.member_geography", "core.profile_field_visibility", "core.member_verification",
+    "core.venture", "core.venture_geography", "core.venture_qualification",
     "iam.member", "iam.member_identity", "iam.role", "iam.permission", "iam.role_permission", "iam.member_role",
     "iam.member_device", "iam.auth_session", "consent.consent_policy", "consent.member_consent",
     "consent.privacy_request", "consent.privacy_request_task", "event.venue", "event.event",
     "event.event_matching_policy", "event.event_registration", "event.live_mode_session", "event.event_presence",
     "social.connection_request", "social.connection", "social.member_block", "social.member_report",
+    "social.contact_record", "social.contact_identifier", "social.contact_link", "social.invite_batch",
+    "social.invitation", "social.meeting_confirmation", "social.contact_link_event", "social.sci_rollup",
     "chat.conversation", "chat.conversation_participant", "chat.message", "chat.message_receipt",
     "storage.file_asset", "storage.file_asset_link", "notification.notification_policy",
     "notification.notification_preference", "notification.push_token", "notification.notification",
     "notification.notification_delivery_attempt", "nlp.nlp_intent", "nlp.nlp_embedding", "nlp.nlp_model_version",
     "nlp.nlp_ranking_config", "nlp.nlp_processing_job", "nlp.match_request", "nlp.nlp_match_result",
     "nlp.nlp_feedback", "nlp.match_suppression", "nlp.evaluation_dataset", "nlp.evaluation_pair",
-    "nlp.evaluation_run", "moderation.moderation_case", "moderation.moderation_action",
+    "nlp.evaluation_run", "nlp.venture_intent_set", "nlp.sci_scoring_config", "nlp.sci_calibration",
+    "nlp.sci_scoring_job", "nlp.sci_link_score", "moderation.moderation_case", "moderation.moderation_action",
     "moderation.content_rule", "moderation.content_scan", "ops.outbox_event", "ops.idempotency_record",
     "ops.background_job", "ops.sync_change", "ops.retention_policy", "ops.retention_execution",
     "ops.audit_event", "analytics.product_event",
@@ -74,7 +85,8 @@ def main() -> None:
     for name, text in texts.items():
         validate_delimiters(name, text)
     combined = "\n".join([*texts.values(), (ROOT / "070_bind_identities.template.sql").read_text(encoding="utf-8")])
-    tables = parse_tables(texts["010_tables.sql"])
+    table_source = texts["010_tables.sql"] + "\n" + texts["065_social_capital_index.sql"]
+    tables = parse_tables(table_source)
     if set(tables) != EXPECTED_TABLES:
         fail(f"table inventory mismatch; missing={sorted(EXPECTED_TABLES-set(tables))}, extra={sorted(set(tables)-EXPECTED_TABLES)}")
 
@@ -147,7 +159,7 @@ def main() -> None:
         fail("Live Mode consent is not bound to the same member and purpose")
     if "NEW.active_until > v_event_ends_at" not in texts["025_invariants.sql"]:
         fail("Live Mode session expiry is not bounded by the event")
-    if re.search(r"\brow_version\s+(?!bigint NOT NULL DEFAULT 1)", texts["010_tables.sql"], re.I):
+    if re.search(r"\brow_version\s+(?!bigint NOT NULL DEFAULT 1)", table_source, re.I):
         fail("row_version is not trigger-managed bigint with default 1")
     for table_name, columns in tables.items():
         if "row_version" in columns and "updated_at" not in columns:
@@ -222,10 +234,29 @@ def main() -> None:
     if re.search(r"GRANT\s+(?:ALL|SELECT, INSERT, UPDATE, DELETE).*SCHEMA nlp.*olga_nlp_worker", security, re.I):
         fail("NLP worker has unrestricted NLP schema access")
 
+    sci = texts["065_social_capital_index.sql"]
+    for required_sci_contract in (
+        "p_max_rows NOT BETWEEN 50 AND 200",
+        "AS MATERIALIZED",
+        "batch_position BETWEEN 1 AND 20",
+        "CREATE OR REPLACE FUNCTION nlp.enqueue_sci_scoring_job",
+        "CREATE OR REPLACE FUNCTION nlp.apply_sci_link_score",
+        "CREATE OR REPLACE FUNCTION nlp.mark_sci_scores_stale",
+        "FROM olga_nlp_worker",
+    ):
+        if required_sci_contract not in sci:
+            fail(f"SCI database contract is missing: {required_sci_contract}")
+
     full_setup = (ROOT / "OLGA_Connect_PostgreSQL_Full_Setup.sql").read_text(encoding="utf-8")
     for name, text in texts.items():
         if text.strip() not in full_setup:
             fail(f"standalone setup is stale relative to {name}")
+    for name in UPGRADE_FILES:
+        text = (ROOT / name).read_text(encoding="utf-8")
+        if text.strip() not in full_setup:
+            fail(f"standalone setup is missing upgrade {name}")
+    if not full_setup.rstrip().endswith("COMMIT;") or "OLGA.SchemaVersion=2.9" not in full_setup:
+        fail("standalone setup does not finish at schema v2.9")
     print(f"Static validation passed: {len(tables)} PostgreSQL tables; foreign keys, indexes, functions, and generated setup resolve.")
 
 

@@ -8,10 +8,13 @@ schemas inside one database.
 
 - `001_schemas_sequences.sql` through `090_verify.sql`: ordered, maintainable schema source.
 - `build_full_setup.ps1`: rebuilds the standalone setup from the ordered source modules.
+- `build_sci_migration.ps1`: embeds the SCI source module in the standalone v2.8-to-v2.9 upgrade.
+- `build_existing_database_upgrade.ps1`: builds the data-preserving v2.4-to-v2.9 bundle for a
+  database that previously ran only the older full setup.
 - `OLGA_Connect_PostgreSQL_Full_Setup.sql`: generated, transactional setup for a new database.
 - `migrations/003_v2_4_to_v2_5_profile_image.sql` through
-  `migrations/006_v2_7_to_v2_8_industry_questionnaire.sql`: ordered, rerunnable upgrades from the
-  generated v2.4 baseline to the current v2.8 schema.
+  `migrations/007_v2_8_to_v2_9_social_capital_index.sql`: ordered, rerunnable upgrades for databases
+  created from an older schema baseline. The current generated full setup already creates v2.9.
 - `deploy_dbeaver.sql` and `deploy_dbeaver_prd.sql`: optional DBeaver database-name guards for
   `olga_connect_dev` and `olga_connect_prod`.
 - `migrate_dev_roles.sql`: one-time, data-preserving migration from the former service roles to
@@ -48,9 +51,17 @@ schemas inside one database.
 
 Follow [the DBeaver runbook](docs/dbeaver-deployment.md). The normal deployment artifact is
 `OLGA_Connect_PostgreSQL_Full_Setup.sql`; execute it as a script, not as individual statements.
-It creates schema v2.4. Immediately apply migrations `003` through `006`, in order, to reach the
-current v2.8 application baseline. Do not deploy the questionnaire-enabled Core API against a
-schema older than v2.8.
+It creates the current v2.9 schema. Do not run historical migrations after a successful current
+full setup.
+
+For an existing development database at v2.8, execute
+`migrations/007_v2_8_to_v2_9_social_capital_index.sql` as the migration identity. The migration is
+transactional and rerunnable at v2.9. It installs `SCI_GLOBAL_V1` as `DRAFT`; activate it only after
+the scorer and calibration are reviewed.
+
+If the existing development database reports v2.4 because it ran the older full setup without the
+subsequent migrations, execute `migrations/upgrade_v2_4_to_v2_9.sql` instead. Do not run that bundle
+against a database reporting any other version.
 
 `070_bind_identities.template.sql` is a non-executable reference and is intentionally excluded from
 the baseline. After the Azure managed identities have been mapped into PostgreSQL, execute the
@@ -75,6 +86,13 @@ Edit the numbered source modules, not the generated full-setup file. Rebuild it 
 
 ```powershell
 .\build_full_setup.ps1
+```
+
+When `065_social_capital_index.sql` changes, also rebuild its standalone migration:
+
+```powershell
+.\build_sci_migration.ps1
+.\build_existing_database_upgrade.ps1
 ```
 
 Then run:
@@ -109,6 +127,8 @@ fixture rows and is safe to rerun.
 - Sensitive ciphertext uses `bytea`; business timestamps use `timestamptz`.
 - NLP embeddings use `vector(1536)`; matching applies eligibility first and exact cosine distance
   to a bounded candidate set. ANN indexes are intentionally absent.
+- SCI imports persist only owner-scoped keyed identifier hashes and encrypted labels. Invitation
+  approval is capped at 20 positions per batch by database constraints.
 - Connection, chat and receipt mutations use actor-scoped idempotency, transactional outbox and
   member-scoped synchronization records.
 - Profile-image bytes remain in object storage; PostgreSQL stores versioned image metadata and

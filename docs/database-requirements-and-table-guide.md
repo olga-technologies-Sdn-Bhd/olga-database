@@ -10,10 +10,10 @@ Current baseline:
 
 - PostgreSQL 17 on Azure Database for PostgreSQL Flexible Server
 - One database per environment
-- Schema version 2.7: the generated v2.4 baseline plus the ordered v2.5 profile-image, v2.6
-  Core outbox-leasing, and v2.7 chat outbox-contract migrations
-- 67 product tables across 12 bounded schemas
-- 4 controlled read views and 9 controlled workflow functions
+- Schema version 2.9: the generated v2.4 baseline plus the ordered profile-image, Core
+  outbox-leasing, chat outbox-contract, industry-questionnaire, and SCI migrations
+- SCI remains inside the existing Core, Social, NLP, outbox, and worker boundaries
+- Controlled SCI access applies eligibility before exact cosine scoring over 50-200 candidates
 - 11 low-volume configuration and reference tables with system-period history
 - API-only access from mobile and admin clients
 

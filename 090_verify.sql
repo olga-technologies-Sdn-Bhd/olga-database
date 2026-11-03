@@ -1,21 +1,21 @@
 DO $$
 DECLARE
     expected_tables text[] := ARRAY[
-        'core.community','core.organization','core.organization_member','core.member_profile','core.sector','core.member_sector','core.sector_questionnaire','core.profile_question','core.sector_questionnaire_question','core.member_questionnaire_response','core.member_question_answer','core.member_geography','core.profile_field_visibility','core.member_verification',
+        'core.community','core.organization','core.organization_member','core.member_profile','core.sector','core.member_sector','core.sector_questionnaire','core.profile_question','core.sector_questionnaire_question','core.member_questionnaire_response','core.member_question_answer','core.member_geography','core.profile_field_visibility','core.member_verification','core.venture','core.venture_geography','core.venture_qualification',
         'iam.member','iam.member_identity','iam.role','iam.permission','iam.role_permission','iam.member_role','iam.member_device','iam.auth_session',
         'consent.consent_policy','consent.member_consent','consent.privacy_request','consent.privacy_request_task',
         'event.venue','event.event','event.event_matching_policy','event.event_registration','event.live_mode_session','event.event_presence',
-        'social.connection_request','social.connection','social.member_block','social.member_report',
+        'social.connection_request','social.connection','social.member_block','social.member_report','social.contact_record','social.contact_identifier','social.contact_link','social.invite_batch','social.invitation','social.meeting_confirmation','social.contact_link_event','social.sci_rollup',
         'chat.conversation','chat.conversation_participant','chat.message','chat.message_receipt',
         'storage.file_asset','storage.file_asset_link',
         'notification.notification_policy','notification.notification_preference','notification.push_token','notification.notification','notification.notification_delivery_attempt',
-        'nlp.nlp_intent','nlp.nlp_embedding','nlp.nlp_model_version','nlp.nlp_ranking_config','nlp.nlp_processing_job','nlp.match_request','nlp.nlp_match_result','nlp.nlp_feedback','nlp.match_suppression','nlp.evaluation_dataset','nlp.evaluation_pair','nlp.evaluation_run',
+        'nlp.nlp_intent','nlp.nlp_embedding','nlp.nlp_model_version','nlp.nlp_ranking_config','nlp.nlp_processing_job','nlp.match_request','nlp.nlp_match_result','nlp.nlp_feedback','nlp.match_suppression','nlp.evaluation_dataset','nlp.evaluation_pair','nlp.evaluation_run','nlp.venture_intent_set','nlp.sci_scoring_config','nlp.sci_calibration','nlp.sci_scoring_job','nlp.sci_link_score',
         'moderation.moderation_case','moderation.moderation_action','moderation.content_rule','moderation.content_scan',
         'ops.outbox_event','ops.idempotency_record','ops.background_job','ops.sync_change','ops.retention_policy','ops.retention_execution','ops.audit_event',
         'analytics.product_event'
     ];
     expected_views text[] := ARRAY[
-        'nlp.vw_member_context_eligibility','nlp.vw_member_relationship','chat.vw_authorized_conversation','admin.vw_member_review'
+        'nlp.vw_member_context_eligibility','nlp.vw_member_relationship','chat.vw_authorized_conversation','admin.vw_member_review','social.vw_sci_contact'
     ];
     expected_history_tables text[] := ARRAY[
         'history.iam_permission','history.iam_role','history.core_sector','history.consent_consent_policy',
@@ -30,6 +30,7 @@ DECLARE
     ];
     expected_functions text[] := ARRAY[
         'nlp.get_requester_intent','nlp.get_eligible_candidates','nlp.save_match_results','nlp.save_feedback',
+        'nlp.enqueue_sci_scoring_job','nlp.get_sci_scoring_candidates','nlp.apply_sci_link_score','nlp.mark_sci_scores_stale',
         'social.accept_connection_request','chat.save_message','chat.save_message_receipt',
         'event.purge_expired_presence','notification.try_enqueue',
         'ops.set_audit_context','ops.current_audit_actor_id','ops.set_audit_actor','ops.archive_row_version'
@@ -41,6 +42,8 @@ DECLARE
         'social.connection.enforce_connection_request_pair',
         'social.connection_request.validate_accepted_request_connection_on_request',
         'social.connection.validate_accepted_request_connection_on_connection',
+        'social.meeting_confirmation.enforce_meeting_confirmation',
+        'social.contact_link.enforce_encounter_origin',
         'chat.conversation_participant.enforce_conversation_participant',
         'chat.conversation.validate_conversation_participant_set_on_conversation',
         'chat.conversation_participant.validate_conversation_participant_set_on_participant',
@@ -297,6 +300,8 @@ BEGIN
 END;
 $$;
 
+-- The generated full setup appends migrations 003 through 007 after this baseline
+-- transaction. Existing databases run only the migrations needed from their version.
 COMMENT ON SCHEMA ops IS 'OLGA.SchemaVersion=2.4';
 RESET ROLE;
 COMMIT;

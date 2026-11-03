@@ -24,19 +24,23 @@ an empty script.
 Associate the editor with the intended connection and use **Execute SQL Script** (`Alt+X`), not
 single-statement execution. Result-set fetching may be disabled during the deployment.
 
-The generated setup creates schema v2.4. After it commits successfully, execute these scripts in
-order against the same database:
+For a new database, the generated setup creates the v2.4 baseline and then executes the ordered
+v2.5 through v2.9 migrations in the same script. Do not execute the individual migration files
+after the current full setup succeeds.
 
-1. `migrations/003_v2_4_to_v2_5_profile_image.sql`
-2. `migrations/004_v2_5_to_v2_6_core_outbox_leasing.sql`
-3. `migrations/005_v2_6_to_v2_7_chat_outbox_contract.sql`
+For an existing database, execute only the next migration from its reported schema version. In
+particular, an existing v2.8 development database uses
+`migrations/007_v2_8_to_v2_9_social_capital_index.sql`. Each migration is transactional,
+rerunnable at its target version, and guarded against an unexpected starting version. Do not skip
+a version.
 
-Each migration is transactional, rerunnable at its target version, and guarded against an
-unexpected starting version. Do not skip a version.
+An existing database that reports v2.4 because it ran only the older full setup may use
+`migrations/upgrade_v2_4_to_v2_9.sql`, which contains migrations 003 through 007 in order. Do not
+use that bundle from any other starting version.
 
-The script is transactional and runs its structural verification before committing. If execution
-fails, choose Stop/Abort rather than Ignore, execute `ROLLBACK;`, correct the cause, reopen the
-latest file and execute the complete script again.
+Each baseline/upgrade section is transactional and runs its structural verification before
+committing. If execution fails, choose Stop/Abort rather than Ignore, execute `ROLLBACK;`, correct
+the cause, inspect the reported schema version, and resume with the next required migration.
 
 ## Confirm
 
@@ -55,7 +59,7 @@ SELECT
     ) AS history_trigger_count;
 ```
 
-Expected schema version after the ordered migrations: `OLGA.SchemaVersion=2.7`. Expected
+Expected schema version after the ordered migrations: `OLGA.SchemaVersion=2.9`. Expected
 history-trigger count: `11`.
 
 Run the rollback-only integration tests listed in the repository README only against a
