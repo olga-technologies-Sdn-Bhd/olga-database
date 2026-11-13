@@ -80,6 +80,10 @@ For an existing development database that does not yet have matching consent, ex
 `deploy_dev_matching_consent.sql` as a script. Members must still accept the published policy through
 the application; the deployment does not create consent evidence for real members.
 
+The development DBeaver full-setup entry point also executes `deploy_dev_sci_calibration.sql` after
+the shared schema setup. This activates the provisional development SCI calibration; the script has
+no database-name guard, so it must not be added to a production deployment entry point.
+
 ## Maintain
 
 Edit the numbered source modules, not the generated full-setup file. Rebuild it afterward:

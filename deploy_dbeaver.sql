@@ -19,3 +19,4 @@ SELECT current_database() AS deployment_database,
        version() AS server_version;
 
 @include OLGA_Connect_PostgreSQL_Full_Setup.sql
+@include deploy_dev_sci_calibration.sql
